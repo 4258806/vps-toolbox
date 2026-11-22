@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.6"
+VERSION="1.0.7"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ info() { echo -e "${C_CYAN}$*${C_RESET}"; }
 dwidth() {
     local s="$1" chars bytes
     s=$(printf '%s' "$s" | sed 's/\x1b\[[0-9;]*m//g')
-    chars=$(printf '%s' "$s" | LC_ALL=C.UTF-8 wc -m)
+    chars=$(printf '%s' "$s" | LC_ALL=C.UTF-8 wc -m 2>/dev/null || printf '%s' "$s" | wc -c)
     bytes=$(printf '%s' "$s" | wc -c)
     echo $(( chars + (bytes - chars) / 2 ))
 }
@@ -173,11 +173,16 @@ check_apt_free() {
         err "检测到 apt/dpkg 正在运行，请等它结束后再试。"
         return 1
     fi
+    if [ -e /var/lib/dpkg/lock-frontend ] && command -v fuser >/dev/null 2>&1 \
+        && fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+        err "检测到 dpkg 锁被占用（/var/lib/dpkg/lock-frontend），请等它结束后再试。"
+        return 1
+    fi
     return 0
 }
 
 get_mem_mb() {
-    awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo
+    awk '/MemTotal/{printf "%d", $2/1024; found=1} END {if (!found) print 0}' /proc/meminfo 2>/dev/null
 }
 
 # 检查根分区可用空间是否 >= N GB；不够则拒绝
@@ -187,11 +192,29 @@ check_disk_space() {
     local required_mb=$((required_gb * 1024))
     local available_mb=0
     available_mb="$(df -m "$path" | awk 'NR==2 {print $4}')"
+    if [[ ! "$available_mb" =~ ^[0-9]+$ ]]; then
+        err "无法读取磁盘空间，请检查磁盘状态。"
+        return 1
+    fi
     if [ "$available_mb" -lt "$required_mb" ]; then
         err "磁盘空间不足：当前可用 $((available_mb / 1024))G，至少需要 ${required_gb}G。"
         return 1
     fi
     return 0
+}
+
+# 只保留最新的 3 份时间戳备份，删掉第 4 个及以后的。
+# 用法：prune_backups <目录> <文件名 glob>，如 prune_backups /etc/ssh "sshd_config.bak.*"
+prune_backups() {
+    local dir="$1" pattern="$2"
+    local count=0 f=""
+    # shellcheck disable=SC2045,SC2086
+    for f in $(ls -t "$dir"/$pattern 2>/dev/null); do
+        count=$((count + 1))
+        if [ "$count" -gt 3 ]; then
+            rm -f -- "$f"
+        fi
+    done
 }
 
 # 无 swap 时自动建 1GB swap（XanMod 安装前的门槛检查用）
@@ -543,12 +566,12 @@ warp_manage() {
         err "无法创建临时文件。"; pause; return 1
     }
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh" -o "$tmp_script" || {
+        curl -fsSL --max-time 60 "https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh" -o "$tmp_script" || {
             err "下载失败，请检查网络后重试。"
             rm -f -- "$tmp_script"; pause; return 1
         }
     elif command -v wget >/dev/null 2>&1; then
-        wget -q "https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh" -O "$tmp_script" || {
+        wget -q --timeout=60 "https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh" -O "$tmp_script" || {
             err "下载失败，请检查网络后重试。"
             rm -f -- "$tmp_script"; pause; return 1
         }
@@ -603,9 +626,12 @@ settings_shortcut() {
         err "$target 已存在且不是软链，不覆盖。"
         pause; return 1
     fi
-    rm -f -- "$target"
     ln -sf "$SCRIPT_PATH" "$target"
     chmod +x "$SCRIPT_PATH"
+    if [ "$(readlink -f "$(command -v "$name" 2>/dev/null)" 2>/dev/null)" != "$SCRIPT_PATH" ]; then
+        err "快捷键创建失败：$name 未解析到本脚本，请检查 /usr/local/bin 的写权限。"
+        pause; return 1
+    fi
     ok "快捷键已创建：$name → $SCRIPT_PATH"
     echo "以后直接输入 $name 即可打开工具箱。"
     pause
@@ -617,7 +643,12 @@ settings_passwd() {
     box_title "修改登录密码"
     echo "将修改 root 的登录密码。改完请自己记好，不要贴到别处。"
     confirm "确定修改密码吗？" || { echo "已取消。"; pause; return 0; }
-    passwd
+    if passwd; then
+        ok "登录密码已修改。"
+    else
+        err "密码修改失败，请重试。"
+        pause; return 1
+    fi
     pause
 }
 
@@ -630,7 +661,7 @@ settings_ssh_port() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    local current_port="" new_port="" backup=""
+    local current_port="" new_port="" backup="" d_backups="" conf_file="" d_bak="" d_restore=""
     box_title "修改 SSH 连接端口"
     # 当前端口优先读 sshd_config（ss 的第一个监听端口未必是 SSH）
     current_port="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)"
@@ -654,42 +685,94 @@ settings_ssh_port() {
 
     backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
     cp /etc/ssh/sshd_config "$backup"
+    prune_backups /etc/ssh "sshd_config.bak.*"
+    # /etc/ssh/sshd_config.d/*.conf 里含 Port 的行也要处理，否则旧端口仍在监听；
+    # 涉及的文件各备一份，校验/重启失败时与 sshd_config 一起恢复
+    for conf_file in /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$conf_file" ] || continue
+        grep -qE '^[[:space:]]*#?[[:space:]]*Port[[:space:]]' "$conf_file" || continue
+        d_bak="${conf_file}.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$conf_file" "$d_bak"
+        d_backups="$d_backups $d_bak"
+        sed -i '/^[[:space:]]*#\?[[:space:]]*Port[[:space:]]/d' "$conf_file"
+    done
     # 删掉现有的 Port 行，在文件首行插入新端口
     sed -i '/^[[:space:]]*#\?[[:space:]]*Port[[:space:]]/d' /etc/ssh/sshd_config
     sed -i "1i Port $new_port" /etc/ssh/sshd_config
     if ! sshd -t 2>/dev/null; then
         cp "$backup" /etc/ssh/sshd_config
+        # shellcheck disable=SC2086
+        for d_restore in $d_backups; do
+            [ -f "$d_restore" ] && cp "$d_restore" "${d_restore%.bak.*}"
+        done
         err "配置校验失败（sshd -t），已恢复备份，未重启 sshd；备份在 $backup"
         pause; return 1
     fi
     # 尽量放行新端口（按本机已有的防火墙工具）
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw allow "$new_port/tcp" >/dev/null 2>&1 && echo "已在 ufw 放行 $new_port/tcp。"
+        if ufw allow "$new_port/tcp" >/dev/null 2>&1; then
+            echo "已在 ufw 放行 $new_port/tcp。"
+        else
+            warn "ufw 放行失败，请手工放行 $new_port/tcp。"
+        fi
     elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
         firewall-cmd --permanent --add-port="$new_port/tcp" >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1 && echo "已在 firewalld 放行 $new_port/tcp。"
     else
         warn "未检测到已启用的 ufw/firewalld，如有防火墙请自行放行 $new_port/tcp。"
     fi
+    # 重启 sshd；失败时先恢复备份再试一次，仍失败才报错
+    local restart_ok=0
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || {
-            err "sshd 重启失败，请检查配置；备份在 /etc/ssh/sshd_config.bak.*"
-            pause; return 1
-        }
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || restart_ok=1
+        if [ "$restart_ok" -eq 1 ]; then
+            cp "$backup" /etc/ssh/sshd_config
+            # shellcheck disable=SC2086
+            for d_restore in $d_backups; do
+                [ -f "$d_restore" ] && cp "$d_restore" "${d_restore%.bak.*}"
+            done
+            if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
+                warn "sshd 重启失败一次，已恢复备份并重启成功，端口仍为 $current_port。"
+            else
+                err "sshd 重启失败，已恢复备份（端口仍为 $current_port）；备份在 $backup"
+                pause; return 1
+            fi
+        fi
     else
-        service ssh restart 2>/dev/null || service sshd restart 2>/dev/null || {
-            err "sshd 重启失败。"
-            pause; return 1
-        }
+        service ssh restart 2>/dev/null || service sshd restart 2>/dev/null || restart_ok=1
+        if [ "$restart_ok" -eq 1 ]; then
+            cp "$backup" /etc/ssh/sshd_config
+            # shellcheck disable=SC2086
+            for d_restore in $d_backups; do
+                [ -f "$d_restore" ] && cp "$d_restore" "${d_restore%.bak.*}"
+            done
+            if service ssh restart 2>/dev/null || service sshd restart 2>/dev/null; then
+                warn "sshd 重启失败一次，已恢复备份并重启成功，端口仍为 $current_port。"
+            else
+                err "sshd 重启失败，已恢复备份（端口仍为 $current_port）；备份在 $backup"
+                pause; return 1
+            fi
+        fi
     fi
     sleep 1
-    if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ":${new_port}$"; then
+    if ! command -v ss >/dev/null 2>&1; then
+        warn "未安装 ss，无法确认新端口是否监听，请手工用新端口连接测试。"
+    elif ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ":${new_port}$"; then
         ok "SSH 端口已改为 $new_port，且新端口正在监听。"
     else
         warn "sshd 已重启，但未检测到 $new_port 在监听，请检查。"
     fi
     warn "请用新端口重新连接；记得同步改 Komari、1Panel、面板的连接记录。"
     pause
+}
+
+# 写完 DNS 后做一次解析测试（只提示，不影响返回码）
+dns_resolve_test() {
+    if getent hosts www.baidu.com >/dev/null 2>&1; then
+        ok "DNS 解析测试通过。"
+    else
+        warn "DNS 解析测试失败，请检查网络与 DNS 是否生效。"
+    fi
 }
 
 # ── 13-7. 优化 DNS 地址 ───────────────────────────────────────────
@@ -706,6 +789,7 @@ set_dns_write() {
     if [ -L /etc/resolv.conf ]; then
         warn "/etc/resolv.conf 是软链（systemd-resolved 接管），直接写会被覆盖。"
         confirm "把它换成真实文件再继续吗？" || { echo "已取消。"; return 1; }
+        cp -a /etc/resolv.conf "/etc/resolv.conf.bak.$(date +%Y%m%d%H%M%S)"
         rm -f /etc/resolv.conf
     fi
     chattr -i /etc/resolv.conf 2>/dev/null || true
@@ -717,10 +801,15 @@ set_dns_write() {
             echo "nameserver $dns2_ipv6"
         fi
     } > /etc/resolv.conf
-    chattr +i /etc/resolv.conf 2>/dev/null || true
-    ok "DNS 已写入 /etc/resolv.conf 并加锁（chattr +i）。"
-    echo "以后如需再改 DNS，请先执行 chattr -i /etc/resolv.conf 解锁。"
+    if chattr +i /etc/resolv.conf 2>/dev/null; then
+        ok "DNS 已写入 /etc/resolv.conf 并加锁（chattr +i）。"
+        echo "以后如需再改 DNS，请先执行 chattr -i /etc/resolv.conf 解锁。"
+    else
+        ok "DNS 已写入（加锁失败，文件系统可能不支持 chattr，未加锁）。"
+        warn "以后改 DNS 不用先解锁（本次未加锁）。"
+    fi
     cat /etc/resolv.conf
+    dns_resolve_test
 }
 
 settings_dns() {
@@ -752,8 +841,13 @@ settings_dns() {
                 apt_install nano || { pause; continue; }
                 chattr -i /etc/resolv.conf 2>/dev/null || true
                 nano /etc/resolv.conf
-                chattr +i /etc/resolv.conf 2>/dev/null || true
-                echo "已保存并重新加锁。"
+                if chattr +i /etc/resolv.conf 2>/dev/null; then
+                    echo "已保存并重新加锁。"
+                else
+                    echo "已保存（加锁失败，文件系统可能不支持 chattr，未加锁）。"
+                    warn "以后改 DNS 不用先解锁（本次未加锁）。"
+                fi
+                dns_resolve_test
                 pause
                 ;;
             0|"") break ;;
@@ -771,9 +865,9 @@ dd_download() {
     # $1 = URL，$2 = 保存路径
     local url="$1" dest="$2"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url" -o "$dest" || return 1
+        curl -fsSL --max-time 60 "$url" -o "$dest" || return 1
     elif command -v wget >/dev/null 2>&1; then
-        wget -q "$url" -O "$dest" || return 1
+        wget -q --timeout=60 "$url" -O "$dest" || return 1
     else
         err "需要 curl 或 wget。"
         return 1
@@ -786,7 +880,7 @@ settings_dd() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    local choice="" phrase="" installer="" run_args=()
+    local choice="" phrase="" installer="" run_args=() rc=""
     while true; do
         cls
         box_title "一键重装系统"
@@ -836,6 +930,12 @@ settings_dd() {
         }
         echo "下载完成，开始重装：${run_args[*]}"
         bash "$installer" "${run_args[@]}"
+        rc=$?
+        rm -f -- "$installer"
+        if [ "$rc" -ne 0 ]; then
+            err "重装脚本执行失败（退出码 $rc），未重启。"
+            pause; return 1
+        fi
     else
         installer="/tmp/InstallNET.sh"
         echo "正在下载 leitbogioro InstallNET.sh ..."
@@ -845,6 +945,12 @@ settings_dd() {
         chmod +x "$installer"
         echo "下载完成，开始重装：${run_args[*]}"
         bash "$installer" "${run_args[@]}"
+        rc=$?
+        rm -f -- "$installer"
+        if [ "$rc" -ne 0 ]; then
+            err "重装脚本执行失败（退出码 $rc），未重启。"
+            pause; return 1
+        fi
     fi
     echo
     warn "重装脚本已执行完毕，机器将重启。"
@@ -859,9 +965,17 @@ settings_ipv4_first() {
     need_root || return 1
     box_title "切换优先 IPv4"
     if grep -q '^precedence ::ffff:0:0/96' /etc/gai.conf 2>/dev/null; then
-        echo "已是 IPv4 优先（/etc/gai.conf 里已有该规则），无需重复设置。"
+        if grep -q '^precedence ::ffff:0:0/96[[:space:]]\+100[[:space:]]*$' /etc/gai.conf 2>/dev/null; then
+            echo "已是 IPv4 优先（/etc/gai.conf 里已有该规则），无需重复设置。"
+        else
+            sed -i 's|^precedence ::ffff:0:0/96.*|precedence ::ffff:0:0/96  100|' /etc/gai.conf
+            ok "已修正为 100。"
+        fi
     else
-        echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+        if ! echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf; then
+            err "写入 /etc/gai.conf 失败。"
+            pause; return 1
+        fi
         ok "已切换为 IPv4 优先（已写入 /etc/gai.conf）。"
     fi
     echo "当前规则："
@@ -872,7 +986,7 @@ settings_ipv4_first() {
 # ── 13-11. 查看端口占用状态（只读） ──────────────────────────────
 settings_ports() {
     box_title "端口占用状态（只读）"
-    ss -tulnape 2>/dev/null || ss -tuln 2>/dev/null || {
+    ss -tulnp 2>/dev/null || ss -tuln 2>/dev/null || {
         err "ss 不可用。"
         pause; return 1
     }
@@ -905,7 +1019,7 @@ add_swap() {
         return 1
     }
     # 新文件就绪，再停旧 swap 并把旧文件备份
-    swapoff -a 2>/dev/null || true
+    swapoff /swapfile 2>/dev/null || true
     [ -f /swapfile ] && mv /swapfile /swapfile.old
     mv /swapfile.new /swapfile
     if swapon /swapfile; then
@@ -956,16 +1070,17 @@ settings_swap() {
                 err "大小无效：最大 16384M（16G）。"
                 pause; return 1
             fi
-            avail_mb="$(df -m / 2>/dev/null | awk 'NR==2 {print $4}')"
-            if [[ "$avail_mb" =~ ^[0-9]+$ ]] && [ "$new_swap" -gt "$avail_mb" ]; then
-                err "大小无效：根分区可用空间只有 ${avail_mb}M，不够建 ${new_swap}M 的 swap。"
-                pause; return 1
-            fi
             ;;
         0|"") return 0 ;;
         *) echo "无效的选择。"; pause; return 1 ;;
     esac
-    warn "将删除现有 /swapfile 并停用现有 swap，重建为 ${new_swap}M。"
+    # 预设档位也要先查磁盘空间，不要等 fallocate/dd 失败才报错
+    avail_mb="$(df -m / 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [[ "$avail_mb" =~ ^[0-9]+$ ]] && [ "$new_swap" -gt "$avail_mb" ]; then
+        err "大小无效：根分区可用空间只有 ${avail_mb}M，不够建 ${new_swap}M 的 swap。"
+        pause; return 1
+    fi
+    warn "将先建新 swapfile，确认可用后再替换旧 swap，旧 swap 在新 swap 启用前一直保留，重建为 ${new_swap}M。"
     warn "注意：本项只改 swap 大小，不改 vm.swappiness。"
     confirm "确定继续吗？" || { echo "已取消。"; pause; return 0; }
     add_swap "$new_swap" || { pause; return 1; }
@@ -977,7 +1092,7 @@ settings_swap() {
 # ── 13-15. 系统时区调整 ──────────────────────────────────────────
 settings_timezone() {
     need_root || return 1
-    local choice="" zone=""
+    local choice="" zone="" cur_zone=""
     box_title "系统时区调整"
     echo "当前时区：$(timedatectl 2>/dev/null | grep "Time zone" | awk '{print $3}')"
     echo "------------------------"
@@ -1005,11 +1120,23 @@ settings_timezone() {
         err "时区不存在：$zone"
         pause; return 1
     fi
-    timedatectl set-timezone "$zone" || {
-        err "设置时区失败。"
-        pause; return 1
-    }
+    if ! timedatectl set-timezone "$zone" 2>/dev/null; then
+        warn "timedatectl 设置失败，改用直接写 /etc/timezone 的方式设置时区。"
+        if ! { echo "$zone" > /etc/timezone 2>/dev/null && ln -sf "/usr/share/zoneinfo/$zone" /etc/localtime 2>/dev/null; }; then
+            err "设置时区失败。"
+            pause; return 1
+        fi
+    fi
     ok "时区已改为 $zone。"
+    # 改完重读一次确认：timedatectl 能读就读它；否则读 /etc/localtime
+    # 软链目标（date +%Z 只给缩写如 CST，永远对不上区域名，会误报）。
+    cur_zone="$(timedatectl 2>/dev/null | grep "Time zone" | awk '{print $3}')"
+    if [ -z "$cur_zone" ] && [ -L /etc/localtime ]; then
+        cur_zone="$(readlink /etc/localtime 2>/dev/null | sed 's|^.*/zoneinfo/||')"
+    fi
+    if [ -n "$cur_zone" ] && [ "$cur_zone" != "$zone" ]; then
+        warn "当前时区显示为 $cur_zone，与目标 $zone 不一致，请检查。"
+    fi
     date
     pause
 }
@@ -1021,7 +1148,7 @@ settings_timezone() {
 #    不再回退到 kejilion 仓库里的 key。
 # 门槛：根分区可用空间 >= 3GB；无 swap 时自动建 1GB swap。
 # 支持的系统代号（XanMod 官方 APT 源）：bookworm trixie forky sid
-# noble plucky questing resolute faye gigi wilma xia zara zena；
+# noble plucky questing resolute；
 # Ubuntu 22.04（jammy）及更老系统官方已停支持，直接拒绝。
 xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg"
@@ -1039,7 +1166,7 @@ xanmod_add_repo() {
         return 1
     fi
     case "$os_codename" in
-        bookworm|trixie|forky|sid|noble|plucky|questing|resolute|faye|gigi|wilma|xia|zara|zena)
+        bookworm|trixie|forky|sid|noble|plucky|questing|resolute)
             ;;
         jammy|focal|bullseye|buster)
             err "XanMod 官方已停止对当前系统（$os_codename）的 APT 源支持，请升级至 Debian 12 / Ubuntu 24 或更高版本。"
@@ -1053,7 +1180,7 @@ xanmod_add_repo() {
 
     apt_install wget gnupg ca-certificates || return 1
     mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
-    if ! wget -qO - "$key_url" | gpg --dearmor -o "$keyring" --yes; then
+    if ! wget --timeout=60 -qO - "$key_url" | gpg --dearmor -o "$keyring" --yes; then
         err "XanMod 官方密钥下载失败，请检查网络后重试。"
         return 1
     fi
@@ -1088,7 +1215,7 @@ xanmod_detect_package() {
     [ -n "$psabi_level" ] || return 1
     [ "$psabi_level" -gt 3 ] && psabi_level=3
 
-    apt-get update -y >/dev/null 2>&1 || true
+    apt-get update -y >/dev/null 2>&1 || warn "apt update 失败，将用现有软件源缓存继续匹配。"
     for prefix in linux-xanmod linux-xanmod-lts; do
         level="$psabi_level"
         while [ "$level" -ge 1 ]; do
@@ -1124,7 +1251,7 @@ xanmod_install_or_update() {
     }
 
     echo "将安装/更新内核包：$package"
-    apt-get update -y
+    apt-get update -y || { err "apt update 失败。"; return 1; }
     if [ "$action" = "update" ]; then
         apt-get install -y --only-upgrade "$package" || apt-get install -y "$package" || {
             err "XanMod 内核更新失败，请检查软件源或稍后重试。"
@@ -1157,14 +1284,24 @@ bbr_enable_nopause() {
         echo "net.core.default_qdisc=fq"
         echo "net.ipv4.tcp_congestion_control=bbr"
     } > "$conf"
+    if [ ! -s "$conf" ]; then
+        err "写入 BBR 配置失败。"
+        return 1
+    fi
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null || true
     sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf 2>/dev/null || true
-    sysctl -p "$conf" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
+    # 新内核未重启时 sysctl 应用失败是预期内的（bbr 模块还没加载），忽略。
+    sysctl -p "$conf" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
+    return 0
 }
 
 xanmod_uninstall() {
     warn "将卸载全部 XanMod 内核并删除 XanMod 软件源。"
     confirm "确定卸载吗？" || { echo "已取消。"; return 0; }
+    if ! dpkg -l 'linux-image-*' 2>/dev/null | awk '$1=="ii" && $2 !~ /xanmod/ {print $2}' | grep -q .; then
+        err "未检测到非 XanMod 内核，卸载后可能无内核可启动，已取消。"
+        return 1
+    fi
     apt-get purge -y 'linux-*xanmod*' || true
     DEBIAN_FRONTEND=noninteractive apt-get autoremove -y || true
     update-grub 2>/dev/null || true
@@ -1196,7 +1333,8 @@ settings_bbr3() {
         while true; do
             cls
             box_title "您已安装 XanMod 的 BBRv3 内核"
-            echo "当前内核版本：$(uname -r)"
+            echo "运行中内核：$(uname -r)"
+            echo "已安装 XanMod：$(dpkg-query -W -f='${Package} ${Version}\n' 'linux-*xanmod*' 2>/dev/null | head -1 || echo 未知)"
             echo "------------------------"
             echo "1. 更新 BBRv3 内核    2. 卸载 BBRv3 内核"
             echo "------------------------"
@@ -1245,17 +1383,20 @@ settings_hostname() {
     fi
     confirm "确定把主机名从 $old_name 改为 $new_name 吗？" || { echo "已取消。"; pause; return 0; }
 
-    hostnamectl set-hostname "$new_name" || {
-        err "hostnamectl 执行失败。"
-        pause; return 1
-    }
-    echo "$new_name" > /etc/hostname
+    if ! hostnamectl set-hostname "$new_name" 2>/dev/null; then
+        warn "hostnamectl 失败，改用 hostname 命令 + 写 /etc/hostname。"
+        hostname "$new_name" 2>/dev/null || { err "修改主机名失败。"; pause; return 1; }
+        echo "$new_name" > /etc/hostname 2>/dev/null || { err "写入 /etc/hostname 失败。"; pause; return 1; }
+    else
+        echo "$new_name" > /etc/hostname
+    fi
     hosts_bak="/etc/hosts.bak.$(date +%Y%m%d%H%M%S)"
     cp /etc/hosts "$hosts_bak"
+    prune_backups /etc "hosts.bak.*"
     # 127.0.0.1 行：有旧主机名就替换，没有就追加
     if grep -q "^127\.0\.0\.1" /etc/hosts; then
         if grep -q "^127\.0\.0\.1.*\b${old_name}\b" /etc/hosts; then
-            sed -i "s/^\(127\.0\.0\.1[[:space:]]\+.*\)\b${old_name}\b/\1${new_name}/" /etc/hosts
+            sed -i "/^127\.0\.0\.1[[:space:]]/ s/\b${old_name}\b/${new_name}/g" /etc/hosts
         else
             sed -i "s/^\(127\.0\.0\.1[[:space:]]\+.*\)$/\1 ${new_name}/" /etc/hosts
         fi
@@ -1265,7 +1406,7 @@ settings_hostname() {
     # ::1 行同理
     if grep -q "^::1" /etc/hosts; then
         if grep -q "^::1.*\b${old_name}\b" /etc/hosts; then
-            sed -i "s/^\(::1[[:space:]]\+.*\)\b${old_name}\b/\1${new_name}/" /etc/hosts
+            sed -i "/^::1[[:space:]]/ s/\b${old_name}\b/${new_name}/g" /etc/hosts
         else
             sed -i "s/^\(::1[[:space:]]\+.*\)$/\1 ${new_name}/" /etc/hosts
         fi
@@ -1311,7 +1452,7 @@ settings_mirror() {
         err "无法创建临时文件。"; pause; return 1
     }
     echo "正在下载 linuxmirrors 换源脚本..."
-    if ! curl -fsSL "https://linuxmirrors.cn/main.sh" -o "$tmp_script"; then
+    if ! curl -fsSL --max-time 60 "https://linuxmirrors.cn/main.sh" -o "$tmp_script"; then
         err "下载失败，请检查网络后重试。"
         rm -f -- "$tmp_script"; pause; return 1
     fi
@@ -1336,7 +1477,11 @@ settings_mirror() {
     local rc=$?
     rm -f -- "$tmp_script"
     if [ "$rc" -eq 0 ]; then
-        ok "换源完成（原配置已备份）。"
+        if apt-get update -y >/dev/null 2>&1; then
+            ok "换源完成且 apt update 通过。"
+        else
+            warn "换源脚本成功但 apt update 失败，请检查源是否可用。"
+        fi
     else
         err "换源脚本退出码：$rc，请查看上面的输出。"
     fi
@@ -1384,6 +1529,9 @@ f2b_install() {
     echo "正在安装 fail2ban ..."
     apt_install rsyslog || return 1
     systemctl enable --now rsyslog.service 2>/dev/null || true
+    if ! systemctl is-active --quiet rsyslog.service 2>/dev/null; then
+        warn "rsyslog 未能启动，/var/log/auth.log 可能不再写入，fail2ban 的 sshd 规则可能看不到新失败记录。"
+    fi
     if [ ! -e /var/log/auth.log ]; then
         touch /var/log/auth.log || return 1
         chmod 0640 /var/log/auth.log || return 1
@@ -1434,10 +1582,19 @@ f2b_basic_config() {
         err "重试次数无效：$maxretry（1-100）。"
         return 1
     fi
+    # 时长为 0 等于不封禁，拒绝
+    local bantime_num="" findtime_num=""
+    bantime_num="$(printf '%s' "$bantime" | grep -oE '^[0-9]+')"
+    findtime_num="$(printf '%s' "$findtime" | grep -oE '^[0-9]+')"
+    if [ "$bantime_num" -eq 0 ] || [ "$findtime_num" -eq 0 ]; then
+        err "时长不能为 0。"
+        return 1
+    fi
     # 写前备份，校验失败时恢复
     if [ -f "$F2B_SSHD_LOCAL" ]; then
         backup="${F2B_SSHD_LOCAL}.bak.$(date +%Y%m%d%H%M%S)"
         cp "$F2B_SSHD_LOCAL" "$backup"
+        prune_backups /etc/fail2ban/jail.d "sshd.local.bak.*"
     fi
     f2b_write_sshd_local "$bantime" "$findtime" "$maxretry"
     if ! fail2ban-client -t >/dev/null 2>&1; then
@@ -1464,9 +1621,13 @@ f2b_uninstall() {
     confirm "确定卸载 fail2ban 吗？" || { echo "已取消。"; return 0; }
     systemctl stop fail2ban.service 2>/dev/null || true
     systemctl disable fail2ban.service 2>/dev/null || true
-    DEBIAN_FRONTEND=noninteractive apt-get purge -y fail2ban 2>/dev/null || \
-        DEBIAN_FRONTEND=noninteractive apt-get remove -y fail2ban
-    ok "fail2ban 已卸载，配置保留在 /etc/fail2ban。"
+    if DEBIAN_FRONTEND=noninteractive apt-get purge -y fail2ban 2>/dev/null \
+        || DEBIAN_FRONTEND=noninteractive apt-get remove -y fail2ban; then
+        ok "fail2ban 已卸载，配置保留在 /etc/fail2ban。"
+    else
+        err "fail2ban 卸载失败，请查看上面的报错。"
+        return 1
+    fi
 }
 
 settings_fail2ban() {
@@ -1518,7 +1679,7 @@ settings_fail2ban() {
                 echo "最近被封 IP"
                 echo "------------------------"
                 if command -v fail2ban-client >/dev/null 2>&1; then
-                    fail2ban-client status sshd 2>/dev/null | grep -A 5 "Banned IP" || echo "（无）"
+                    fail2ban-client status sshd 2>/dev/null | sed -n '/Banned IP/,$p' || echo "（无）"
                 fi
                 echo
                 echo "------------------------"
@@ -1543,8 +1704,16 @@ settings_fail2ban() {
                 apt_install nano || { pause; continue; }
                 [ -f "$F2B_SSHD_LOCAL" ] || f2b_write_sshd_local "10m" "10m" "5"
                 nano "$F2B_SSHD_LOCAL"
-                echo "已保存，正在 reload fail2ban..."
-                fail2ban-client reload >/dev/null 2>&1 || true
+                if fail2ban-client -t >/dev/null 2>&1; then
+                    echo "已保存，正在 reload fail2ban..."
+                    if fail2ban-client reload >/dev/null 2>&1; then
+                        ok "配置已生效。"
+                    else
+                        warn "配置校验通过，但 reload 失败，请手工执行 fail2ban-client reload。"
+                    fi
+                else
+                    err "配置校验失败（fail2ban-client -t），请检查刚改的内容，未 reload。"
+                fi
                 pause
                 ;;
             6)
@@ -1664,7 +1833,8 @@ net.ipv4.tcp_slow_start_after_idle = 0"
         cc="cubic"; qdisc="fq_codel"
     fi
 
-    [ -f "$conf" ] && cp "$conf" "${conf}.bak.$(date +%s)"
+    [ -f "$conf" ] && cp "$conf" "${conf}.bak.$(date +%s)-$$"
+    prune_backups /etc/sysctl.d "99-vps-toolbox-optimize.conf.bak.*"
 
     echo "写入优化配置..."
     cat > "$conf" << SYSCTL
@@ -1755,7 +1925,7 @@ $game_extra
 SYSCTL
 
     echo "应用优化参数..."
-    local applied=0 skipped=0 line=""
+    local applied=0 skipped=0 line="" key="" skipped_list=""
     while IFS= read -r line; do
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
         [[ -z "${line// /}" ]] && continue
@@ -1763,9 +1933,19 @@ SYSCTL
             applied=$((applied + 1))
         else
             skipped=$((skipped + 1))
+            key="${line%%=*}"
+            key="${key//[[:space:]]/}"
+            if [ -z "$skipped_list" ]; then
+                skipped_list="$key"
+            else
+                skipped_list="$skipped_list，$key"
+            fi
         fi
     done < "$conf"
     echo "已应用 ${applied} 项参数${skipped:+，跳过 ${skipped} 项不支持的参数}"
+    if [ "$skipped" -gt 0 ]; then
+        echo "跳过的参数：$skipped_list"
+    fi
 
     if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
         echo "$thp" > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
@@ -1802,7 +1982,10 @@ kernel_optimize_restore() {
         sed -i '/# vps-toolbox-optimize/,+4d' /etc/security/limits.conf
     fi
     rm -f /etc/modules-load.d/bbr.conf 2>/dev/null || true
-    ok "系统已还原到默认设置（本工具箱的优化配置已删除）。"
+    ok "优化配置已删除，运行时的参数需重启后才完全恢复。"
+    if confirm "现在重启服务器吗？"; then
+        reboot
+    fi
 }
 
 settings_kernel_optimize() {
@@ -1898,7 +2081,10 @@ settings_logs() {
             1)
                 read -r -p "查看最近多少行日志？[默认 100]: " count
                 count="${count:-100}"
-                if [[ ! "$count" =~ ^[0-9]+$ ]]; then count=100; fi
+                if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+                    warn "行数无效，已用默认值 100。"
+                    count=100
+                fi
                 journalctl -n "$count" --no-pager
                 pause
                 ;;
@@ -1906,7 +2092,9 @@ settings_logs() {
                 read -r -p "请输入服务名（如 sshd、nginx）: " svc
                 if [ -z "$svc" ]; then
                     echo "服务名为空。"
-                elif systemctl list-unit-files 2>/dev/null | grep -q "^${svc}"; then
+                elif [[ ! "$svc" =~ ^[A-Za-z0-9@._-]+$ ]]; then
+                    echo "服务名无效。"
+                elif systemctl show -p LoadState --value "$svc" 2>/dev/null | grep -qx "loaded"; then
                     journalctl -u "$svc" -n 100 --no-pager
                 else
                     echo "服务不存在或无日志：$svc"
@@ -1950,12 +2138,11 @@ settings_logs() {
                 echo "3) 限制日志最大 500M"
                 read -r -p "请选择清理方式: " c
                 case "$c" in
-                    1) journalctl --vacuum-time=7d ;;
-                    2) journalctl --vacuum-time=3d ;;
-                    3) journalctl --vacuum-size=500M ;;
+                    1) journalctl --vacuum-time=7d && ok "journal 日志清理完成。" ;;
+                    2) journalctl --vacuum-time=3d && ok "journal 日志清理完成。" ;;
+                    3) journalctl --vacuum-size=500M && ok "journal 日志清理完成。" ;;
                     *) echo "无效选项" ;;
                 esac
-                ok "journal 日志清理完成。"
                 sleep 1
                 ;;
             0|"") break ;;
@@ -2053,18 +2240,37 @@ settings_env() {
             4)
                 apt_install nano || { pause; continue; }
                 nano "$bashrc"
+                if [ -f "$bashrc" ] && ! bash -n "$bashrc"; then
+                    warn "语法检查失败（bash -n），请检查刚改的内容，下次登录可能受影响。"
+                fi
                 ;;
             5)
                 apt_install nano || { pause; continue; }
                 nano "$profile"
+                if [ -f "$profile" ] && ! bash -n "$profile"; then
+                    warn "语法检查失败（bash -n），请检查刚改的内容，下次登录可能受影响。"
+                fi
                 ;;
             6)
                 echo "正在重新加载环境变量（只对当前脚本会话生效，新登录才用新值）..."
-                # shellcheck disable=SC1090
-                source "$bashrc" 2>/dev/null || true
-                # shellcheck disable=SC1090
-                source "$profile" 2>/dev/null || true
-                ok "环境变量已重新加载。"
+                local src_ok=1
+                if [ -f "$bashrc" ]; then
+                    # shellcheck disable=SC1090
+                    if ! source "$bashrc"; then
+                        warn "重载 $bashrc 时有报错（见上面），请检查。"
+                        src_ok=0
+                    fi
+                fi
+                if [ -f "$profile" ]; then
+                    # shellcheck disable=SC1090
+                    if ! source "$profile"; then
+                        warn "重载 $profile 时有报错（见上面），请检查。"
+                        src_ok=0
+                    fi
+                fi
+                if [ "$src_ok" -eq 1 ]; then
+                    ok "环境变量已重新加载。"
+                fi
                 pause
                 ;;
             0|"") break ;;
