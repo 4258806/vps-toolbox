@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.7"
+VERSION="1.0.8"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -234,7 +234,6 @@ check_swap() {
 sys_info() {
     cls
     info "正在查询系统信息..."
-    sleep 1
 
     local hostname="" os_info="" kernel_version="" cpu_arch=""
     local cpu_info="" cpu_cores="" cpu_freq="" cpu_usage_percent=""
@@ -244,7 +243,7 @@ sys_info() {
     local rx="" tx="" ipv4_list="" ipv6_list=""
 
     hostname="$(uname -n)"
-    os_info="$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"')"
+    os_info="$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2- | tr -d '"')"
     kernel_version="$(uname -r)"
     cpu_arch="$(uname -m)"
     if command -v lscpu >/dev/null 2>&1; then
@@ -255,19 +254,19 @@ sys_info() {
     cpu_cores="$(nproc)"
     cpu_freq="$(awk -F': ' '/MHz/ {printf "%.1f GHz", $2/1000; exit}' /proc/cpuinfo 2>/dev/null)"
     # CPU 占用：两次 /proc/stat 采样，间隔 1 秒（瞬时值）
-    cpu_usage_percent="$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f", (($2+$4-u1) * 100 / (t-t1))}' \
+    cpu_usage_percent="$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1) {u1=u; t1=t} else if (t>t1) {printf "%.0f", (($2+$4-u1) * 100 / (t-t1))} else {printf "0"}}' \
         <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat))"
     mem_info="$(free -b | awk 'NR==2{printf "%.2f/%.2fM (%.2f%%)", $3/1024/1024, $2/1024/1024, $3*100/$2}')"
     swap_info="$(free -m | awk 'NR==3{used=$3; total=$2; if (total == 0) {percentage=0} else {percentage=used*100/total}; printf "%dM/%dM (%d%%)", used, total, percentage}')"
     disk_info="$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')"
-    load="$(uptime | awk '{print $(NF-2), $(NF-1), $NF}')"
+    load="$(awk '{print $1, $2, $3}' /proc/loadavg 2>/dev/null)"
     dns_addresses="$(awk '/^nameserver/{printf "%s ", $2} END {print ""}' /etc/resolv.conf 2>/dev/null)"
     congestion_algorithm="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")"
     queue_algorithm="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "未知")"
     # 总接收/总发送：读 /proc/net/dev，自开机累计值，不是速率
     local traffic=""
     traffic="$(awk 'BEGIN { rx_total = 0; tx_total = 0 }
-        $1 ~ /^(eth|ens|enp|eno)[0-9]+/ { rx_total += $2; tx_total += $10 }
+        NR>2 && $1 !~ /^lo:/ { rx_total += $2; tx_total += $10 }
         END {
             rx_units = "B"; tx_units = "B";
             if (rx_total > 1024) { rx_total /= 1024; rx_units = "K"; }
@@ -358,11 +357,17 @@ sys_update() {
         pause; return 1
     }
     ok "系统更新完成。"
+    echo "提示：旧内核/旧包可用「系统清理」（主菜单 3）清理。"
     kernel_after="$(dpkg -l 'linux-image-*' 2>/dev/null | awk '$1=="ii"{print $2" "$3}' | sort)"
     if [ "$kernel_before" != "$kernel_after" ]; then
         warn "本次更新安装/升级了内核："
         diff <(printf '%s\n' "$kernel_before") <(printf '%s\n' "$kernel_after") | grep '^[<>]' || true
         warn "新内核要重启后才生效；重启后请用 uname -r 核对，并检查 grub 默认启动项。"
+    fi
+    local held=""
+    held="$(apt-mark showhold 2>/dev/null | tr '\n' ' ')"
+    if [ -n "$held" ]; then
+        warn "以下包被 hold 住，本次未更新：$held"
     fi
     if [ -f /var/run/reboot-required ]; then
         warn "系统提示需要重启：$(cat /var/run/reboot-required.pkgs 2>/dev/null | head -3 | tr '\n' ' ')"
@@ -379,19 +384,18 @@ sys_clean() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    local df_before="" df_after="" j_before="" j_after="" freed=0
+    local df_before="" df_after="" j_before="" j_after="" freed=0 apt_ok=1
     box_title "系统清理"
-    echo "将执行：apt autoremove --purge、apt clean、apt autoclean，"
+    echo "将执行：apt autoremove --purge、apt clean，"
     echo "再清理 journal 日志（保留最近 7 天，且总量不超过 500M）。"
     confirm "确定清理吗？" || { echo "已取消。"; pause; return 0; }
     check_apt_free || { pause; return 1; }
 
     df_before="$(df -m / 2>/dev/null | awk 'NR==2 {print $4}')"
     j_before="$(journalctl --disk-usage 2>/dev/null | awk '{print $7}')"
-    DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true
-    DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y
-    DEBIAN_FRONTEND=noninteractive apt-get clean -y
-    DEBIAN_FRONTEND=noninteractive apt-get autoclean -y
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a || { warn "dpkg --configure -a 失败。"; apt_ok=0; }
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y || { warn "apt autoremove 失败。"; apt_ok=0; }
+    DEBIAN_FRONTEND=noninteractive apt-get clean -y || { warn "apt clean 失败。"; apt_ok=0; }
     journalctl --rotate 2>/dev/null || true
     journalctl --vacuum-time=7d 2>/dev/null || true
     journalctl --vacuum-size=500M 2>/dev/null || true
@@ -410,7 +414,11 @@ sys_clean() {
     if [ -n "$j_before" ] && [ -n "$j_after" ]; then
         echo "  journal 占用：${j_before} → ${j_after}"
     fi
-    ok "系统清理完成。"
+    if [ "$apt_ok" -eq 1 ]; then
+        ok "系统清理完成。"
+    else
+        err "系统清理未完全成功，请查看上面的报错。"
+    fi
     pause
 }
 
@@ -517,16 +525,30 @@ bbr_enable() {
         "  ${C_YELLOW}分工提醒：跑完 vps-tune 调优后不要点本项，${C_RESET}"
         "  ${C_YELLOW}会重写调优结果。${C_RESET}"
     )
+    if [ "$cur_cc" = "bbr" ]; then
+        lines+=(
+            ""
+            "  ${C_RED}注意：BBR 已开启，但队列算法是 ${cur_qdisc}（不是 fq），${C_RESET}"
+            "  ${C_RED}可能是 vps-tune 调过的；继续会重写为 fq。${C_RESET}"
+        )
+    fi
     w=$(max_width "${lines[@]}")
     box "$w" "${lines[@]}"
     confirm "确定开启 BBR 吗？" || { echo "已取消。"; pause; return 0; }
 
-    mkdir -p /etc/sysctl.d
+    # 已有旧配置先备份（只留最新 3 份），再覆盖
+    if [ -f "$conf" ]; then
+        cp -p "$conf" "$conf.bak.$(date +%Y%m%d%H%M%S).$$" 2>/dev/null || true
+        prune_backups /etc/sysctl.d "99-vps-toolbox-bbr.conf.bak.*"
+    fi
+
+    mkdir -p /etc/sysctl.d || { err "无法创建 /etc/sysctl.d。"; pause; return 1; }
     {
         echo "# vps-toolbox BBR 基线参数（初始值，vps-tune 调优后不要再改）"
         echo "net.core.default_qdisc=fq"
         echo "net.ipv4.tcp_congestion_control=bbr"
-    } > "$conf"
+    } > "$conf" || { err "写入 $conf 失败。"; pause; return 1; }
+    [ -s "$conf" ] || { err "写入 $conf 失败（文件为空）。"; pause; return 1; }
     # 清理 /etc/sysctl.conf 里同名旧残留，避免冲突
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null || true
     sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf 2>/dev/null || true
@@ -534,8 +556,15 @@ bbr_enable() {
         err "应用参数失败。"
         pause; return 1
     }
-    ok "BBR 已开启。"
-    echo "拥塞算法：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    local new_cc=""
+    new_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    if [ "$new_cc" = "bbr" ]; then
+        ok "BBR 已开启。"
+    else
+        err "参数已应用，但拥塞算法仍是 ${new_cc:-未知}，BBR 未生效。"
+        pause; return 1
+    fi
+    echo "拥塞算法：$new_cc"
     echo "队列算法：$(sysctl -n net.core.default_qdisc 2>/dev/null)"
     echo "内核版本：$(uname -r 2>/dev/null)"
     echo "BBR 版本：$(bbr_version)"
@@ -565,22 +594,27 @@ warp_manage() {
     tmp_script="$(mktemp /tmp/warp-menu.XXXXXX.sh)" || {
         err "无法创建临时文件。"; pause; return 1
     }
+    trap 'rm -f -- "$tmp_script"' EXIT
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --max-time 60 "https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh" -o "$tmp_script" || {
             err "下载失败，请检查网络后重试。"
+            trap - EXIT
             rm -f -- "$tmp_script"; pause; return 1
         }
     elif command -v wget >/dev/null 2>&1; then
         wget -q --timeout=60 "https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh" -O "$tmp_script" || {
             err "下载失败，请检查网络后重试。"
+            trap - EXIT
             rm -f -- "$tmp_script"; pause; return 1
         }
     else
         err "需要 curl 或 wget，请先安装。"
+        trap - EXIT
         rm -f -- "$tmp_script"; pause; return 1
     fi
     if [ ! -s "$tmp_script" ]; then
         err "下载的文件为空，已取消。"
+        trap - EXIT
         rm -f -- "$tmp_script"; pause; return 1
     fi
     echo "已下载 warp 脚本（$(wc -c < "$tmp_script") 字节），现在执行..."
@@ -590,6 +624,7 @@ warp_manage() {
     echo
     warn "提醒：如需恢复国内 DNS，请用「系统工具 → 7 优化 DNS 地址」选 2。"
     pause
+    trap - EXIT
     return "$rc"
 }
 
@@ -2481,6 +2516,10 @@ if [ "$#" -eq 0 ]; then
     exit 0
 fi
 
+if [ "$#" -gt 1 ]; then
+    warn "多余参数已忽略：${*:2}"
+fi
+
 case "$1" in
     info)     sys_info ;;
     update)   sys_update ;;
@@ -2490,6 +2529,9 @@ case "$1" in
     settings) settings_menu ;;
     help|--help|-h)
         show_help
+        ;;
+    version|--version|-v)
+        echo "vps-toolbox $VERSION"
         ;;
     *)
         echo "用法：$0 [info|update|clean|bbr|warp|settings|help]"
