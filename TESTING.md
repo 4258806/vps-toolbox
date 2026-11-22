@@ -170,3 +170,19 @@ sudo 免密；脚本用 `sudo bash /tmp/vps-toolbox.sh` 跑，菜单用管道输
 说明：两次实测装的都是当时 main 分支上的 v1.0.1（v1.0.2 还没推），
 安装器逻辑不变，推完 v1.0.2 后同一条命令装到的就是 v1.0.2。
 InstaBox 上装完工具箱就留在机器里了（`tbox` 可用），未卸载。
+
+## 自动跳转主菜单验证（v1.0.3，2026-11-22 21:33–21:35）
+
+改动：`install.sh` 装完验证通过后直接进主菜单，不用再打 `tbox`。
+实现是 `"$DEST" </dev/tty`（安装器是管道进来的，stdin 是管道不是
+终端，所以从 `/dev/tty` 接管输入；没终端时只打印提示、不启动菜单）。
+
+| 环境 | 方法 | 结果 |
+|---|---|---|
+| InstaBox（Debian 13） | scp 上传新 install.sh，用 `ssh -tt` 分配 PTY、stdin 用管道模拟 `curl \| bash`，4 秒后送 `0` 退出 | 通过，主菜单正常出现（v1.0.2 字样，因 main 上还是 v1.0.2），输入 0 后打印“再见。”正常退出 |
+
+说明：`ssh -t`（单 t）会因 stdin 是管道而拒绝分配 PTY，
+必须用 `ssh -tt`（双 t）强制分配，这才是用户 FinalShell 交互
+会话的真实情况。测试里菜单前有一行 `'unknown': I need something
+more specific.`，是 PTY 的 TERM 未设导致 `tput/clear` 的报错，
+用户真实终端 TERM 正常时不会出现，不影响菜单。
