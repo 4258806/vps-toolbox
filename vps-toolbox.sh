@@ -9,8 +9,8 @@
 #
 # 适用：仅 Debian / Ubuntu（x86_64 与 ARM64 均可，XanMod 内核安装仅限 x86_64）。
 # 用法：交互菜单直接运行 ./vps-toolbox.sh；也可以带子命令：
-#       tbox info | update | clean | bbr | warp | settings | help
-# 快捷命令：首次运行后用「系统工具 → 1 设置脚本启动快捷键」创建，默认名 tbox。
+#       gjx info | update | clean | bbr | warp | settings | help
+# 快捷命令：安装时自动创建 gjx；也可用「系统工具 → 1 设置脚本启动快捷键」另建，默认名 gjx。
 #
 # 隐私：本脚本零遥测、零对外上报、不查询 IP。
 #       不向任何外部服务发送系统信息、IP 或使用记录。
@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.10"
+VERSION="1.1.0"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -628,7 +628,7 @@ warp_manage() {
     return "$rc"
 }
 
-# ── 103. 更新工具箱（自更新） ────────────────────────────────────────
+# ── 100. 更新工具箱（自更新） ────────────────────────────────────────
 # 重新下载 install.sh 并执行，等同于手动跑一键安装命令。
 # 装完 install.sh 会直接进新版主菜单；这里不返回旧菜单。
 self_update() {
@@ -687,8 +687,8 @@ settings_shortcut() {
     local name="" target="" shadow=""
     box_title "设置脚本启动快捷键"
     echo "将在 /usr/local/bin 下创建一个指向本脚本的软链。"
-    read -r -p "快捷键名 [默认 tbox]: " name
-    name="${name:-tbox}"
+    read -r -p "快捷键名 [默认 gjx]: " name
+    name="${name:-gjx}"
     if [[ ! "$name" =~ ^[A-Za-z0-9_.-]+$ ]]; then
         err "快捷键名只能用字母、数字、下划线、点、横线。"
         pause; return 1
@@ -2363,7 +2363,7 @@ settings_env() {
     done
 }
 
-# ── 13-99. 重启服务器 ─────────────────────────────────────────────
+# ── 13-98. 重启服务器 ─────────────────────────────────────────────
 settings_reboot() {
     need_root || return 1
     box_title "重启服务器"
@@ -2383,30 +2383,30 @@ show_help() {
     echo "------------------------"
     echo "交互菜单："
     echo "  ./vps-toolbox.sh            打开主菜单"
-    echo "  tbox                        打开主菜单（需先创建快捷键）"
+    echo "  gjx                         打开主菜单"
     echo
     echo "直接子命令："
-    echo "  tbox info                   系统信息查询"
-    echo "  tbox update                 系统更新"
-    echo "  tbox clean                  系统清理"
-    echo "  tbox bbr                    BBR 管理（基线开启）"
-    echo "  tbox warp                   WARP 管理"
-    echo "  tbox settings               系统工具子菜单"
-    echo "  tbox help                   显示本帮助"
-    echo "  tbox version                显示版本号"
-    echo "  tbox self-update            更新工具箱到最新版"
+    echo "  gjx info                    系统信息查询"
+    echo "  gjx update                  系统更新"
+    echo "  gjx clean                   系统清理"
+    echo "  gjx bbr                     BBR 管理（基线开启）"
+    echo "  gjx warp                    WARP 管理"
+    echo "  gjx settings                系统工具子菜单"
+    echo "  gjx help                    显示本帮助"
+    echo "  gjx version                 显示版本号"
+    echo "  gjx self-update             更新工具箱到最新版"
     echo
     echo "主菜单："
     echo "  1 系统信息查询  2 系统更新  3 系统清理"
     echo "  5 BBR 管理      7 WARP 管理  13 系统工具"
-    echo "  102 卸载脚本    103 更新工具箱"
+    echo "  99 卸载脚本     100 更新工具箱"
     echo "  0 退出脚本"
     echo
     echo "系统工具子菜单（保留的编号）："
     echo "  1 快捷键  2 改密码  6 改 SSH 端口  7 DNS  8 重装系统"
     echo "  10 IPv4 优先  11 端口占用  12 swap  15 时区  16 BBRv3"
     echo "  18 主机名  19 换源  22 fail2ban  28 内核参数优化"
-    echo "  41 日志管理  42 环境变量  99 重启  101 帮助"
+    echo "  41 日志管理  42 环境变量  98 重启  101 帮助"
     echo
     echo "新机初始化建议顺序："
     echo "  7（DNS 国内）→ 10（IPv4 优先）→ 12（swap 2048M）"
@@ -2418,7 +2418,7 @@ show_help() {
     echo "------------------------"
 }
 
-# ── 102. 卸载脚本（主菜单） ──────────────────────────────────────────────
+# ── 99. 卸载脚本（主菜单） ──────────────────────────────────────────────
 settings_uninstall() {
     box_title "卸载 vps-toolbox"
     echo "将删除：crontab 里 vps-toolbox 相关的行、/usr/local/bin 下"
@@ -2448,7 +2448,7 @@ settings_uninstall() {
     fi
     # 删指向本脚本的软链
     local link=""
-    for link in /usr/local/bin/tbox /usr/local/bin/vps-toolbox; do
+    for link in /usr/local/bin/gjx /usr/local/bin/tbox /usr/local/bin/vps-toolbox; do
         if [ -L "$link" ] && [ "$(readlink -f "$link" 2>/dev/null)" = "$SCRIPT_PATH" ]; then
             rm -f -- "$link"
             echo "已删除快捷键：$link"
@@ -2478,7 +2478,7 @@ settings_menu() {
             "  ${C_CYAN}18.${C_RESET}  修改主机名"
             "  ${C_CYAN}22.${C_RESET}  SSH 防御程序 fail2ban"
             "  ${C_CYAN}41.${C_RESET}  系统日志管理工具"
-            "  ${C_CYAN}99.${C_RESET}  重启服务器"
+            "  ${C_CYAN}98.${C_RESET}  重启服务器"
         )
         lw=$(( $(max_width "${left[@]}") + 2 ))
         lines=(
@@ -2516,7 +2516,7 @@ settings_menu() {
             28) settings_kernel_optimize ;;
             41) settings_logs ;;
             42) settings_env ;;
-            99) settings_reboot ;;
+            98) settings_reboot ;;
             101) show_help; pause ;;
             0|"") return 0 ;;
             *) echo "无效的选择。"; pause ;;
@@ -2532,6 +2532,7 @@ main_menu() {
         cls
         lines=(
             "  ${C_BOLD}${C_CYAN}VPS 工具箱 v$VERSION（精简自研版）${C_RESET}"
+            "  快捷键：gjx"
             "  零遥测 · 仅 Debian/Ubuntu"
             "---"
             "  ${C_CYAN}1.${C_RESET}   系统信息查询"
@@ -2540,8 +2541,8 @@ main_menu() {
             "  ${C_CYAN}5.${C_RESET}   BBR 管理"
             "  ${C_CYAN}7.${C_RESET}   WARP 管理"
             "  ${C_CYAN}13.${C_RESET}  系统工具"
-            "  ${C_CYAN}102.${C_RESET} 卸载脚本"
-            "  ${C_CYAN}103.${C_RESET} 更新工具箱"
+            "  ${C_CYAN}99.${C_RESET}  卸载脚本"
+            "  ${C_CYAN}100.${C_RESET} 更新工具箱"
             "---"
             "  ${C_CYAN}0.${C_RESET}   退出脚本"
         )
@@ -2555,8 +2556,8 @@ main_menu() {
             5) bbr_enable ;;
             7) warp_manage ;;
             13) settings_menu ;;
-            102) settings_uninstall ;;
-            103) self_update ;;
+            99) settings_uninstall ;;
+            100) self_update ;;
             0|"") echo "再见。"; exit 0 ;;
             *) echo "无效的选择。"; pause ;;
         esac
@@ -2589,7 +2590,7 @@ case "$1" in
         ;;
     *)
         echo "用法：$0 [info|update|clean|bbr|warp|self-update|settings|help|version]"
-        echo "不带参数打开交互菜单；tbox help 查看完整说明。"
+        echo "不带参数打开交互菜单；gjx help 查看完整说明。"
         exit 1
         ;;
 esac
