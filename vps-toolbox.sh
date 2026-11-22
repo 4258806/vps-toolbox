@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.0.1
+# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.0.2
 #
 # 来源：参考 kejilion/sh（Apache 2.0）的功能与实现，自行重写，只保留
 #       真正用得上的部分；与 vps-tune 是分工关系，不是重复：
@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
