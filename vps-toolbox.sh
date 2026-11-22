@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 #
-# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.0.4
+# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.2.0
 #
-# 来源：参考 kejilion/sh（Apache 2.0）的功能与实现，自行重写，只保留
-#       真正用得上的部分；与 vps-tune 是分工关系，不是重复：
+# 自行编写，只保留真正用得上的部分；与 vps-tune 是分工关系，不是重复：
 #       工具箱负责新机基线/设置（给初始值），vps-tune 负责实测调优
 #       （按实测给最终值）。调好后不要再用工具箱重写那批参数。
 #
@@ -25,7 +24,7 @@
 #
 set -u
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -166,7 +165,7 @@ apt_install() {
     return 0
 }
 
-# 检查是否有 apt/dpkg 正在运行（不像 kejilion 的 fix_dpkg 那样 pkill -9）
+# 检查是否有 apt/dpkg 正在运行（不强制杀掉，等它结束后再试）
 check_apt_free() {
     if pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 \
         || pgrep -x dpkg >/dev/null 2>&1; then
@@ -229,8 +228,8 @@ check_swap() {
 }
 
 # ── 1. 系统信息查询 ───────────────────────────────────────────────
-# 照 kejilion 的 linux_info 的展示项，但删掉了 send_stats 遥测和
-# ipinfo.io 查询（出口 IP 不再发给外部服务）；IP 只显示本机地址。
+# 系统信息展示：无遥测、不查 ipinfo.io（出口 IP 不发给外部服务）；
+# IP 只显示本机地址。
 sys_info() {
     cls
     info "正在查询系统信息..."
@@ -325,9 +324,9 @@ sys_info() {
 }
 
 # ── 2. 系统更新 ───────────────────────────────────────────────────
-# 照 kejilion 的 linux_update（Debian/Ubuntu 分支），改了三处：
-# ① 加确认；② 去掉 pkill -9 杀 apt/dpkg（只检查是否有人在跑）；
-# ③ full-upgrade 前提示会装新内核，装完对照内核清单并提示重启。
+# 系统更新（Debian/Ubuntu）：先确认；不强制杀 apt/dpkg
+# （只检查是否有人在跑）；full-upgrade 前提示会装新内核，
+# 装完对照内核清单并提示重启。
 sys_update() {
     need_root || return 1
     require_debian_ubuntu || return 1
@@ -377,9 +376,8 @@ sys_update() {
 }
 
 # ── 3. 系统清理 ───────────────────────────────────────────────────
-# 只取 kejilion 的 linux_clean 的 Debian/Ubuntu 分支；改了一处：
-# journal 清理从 --vacuum-time=1s（等于全清日志）改成 7 天，
-# 再加 --vacuum-size=500M 上限。其他发行版的 rm -rf 分支不要。
+# 系统清理（Debian/Ubuntu）：journal 清理保留 7 天、
+# 再加 --vacuum-size=500M 上限（不全清日志）。
 sys_clean() {
     need_root || return 1
     require_debian_ubuntu || return 1
@@ -422,12 +420,11 @@ sys_clean() {
     pause
 }
 
-# ── 5. BBR 管理（只做基线开启） ────────────────────────────────────
-# kejilion 的 linux_bbr 在 Debian/Ubuntu 上根本没有菜单，只是下载执行
-# 第三方 tcpx.sh——不要。本项只做基线开启，照 bbr_on 的两行：
+# ── 4. BBR 管理（只做基线开启） ────────────────────────────────────
+# 本项只做基线开启，写两行：
 #   net.core.default_qdisc=fq
 #   net.ipv4.tcp_congestion_control=bbr
-# 写到 /etc/sysctl.d/99-vps-toolbox-bbr.conf 并立即生效。
+# 到 /etc/sysctl.d/99-vps-toolbox-bbr.conf 并立即生效。
 # 注意分工：这里只给初始值；跑完 vps-tune 调优后不要再点本项，
 # 否则会把 vps-tune 按实测给的最终值重写回初始值。
 # BBR 版本判定（与 vps-tune 同一套办法）：内核名含 xanmod/bbrv3 → v3；
@@ -519,7 +516,7 @@ bbr_enable() {
         "    net.core.default_qdisc=fq"
         "    net.ipv4.tcp_congestion_control=bbr"
         ""
-        "  BBRv3 需 XanMod 内核，用系统工具 16 设置 BBR3 加速安装；"
+        "  BBRv3 需 XanMod 内核，用系统工具 10 设置 BBR3 加速安装；"
         "  没有 XanMod 内核时，这里开启的是 BBRv1。"
         ""
         "  ${C_YELLOW}分工提醒：跑完 vps-tune 调优后不要点本项，${C_RESET}"
@@ -571,7 +568,7 @@ bbr_enable() {
     pause
 }
 
-# ── 7. WARP 管理 ──────────────────────────────────────────────────
+# ── 5. WARP 管理 ──────────────────────────────────────────────────
 # 本脚本不实现 WARP，只下载执行 fscarmen 的 warp 脚本（GitLab 直链），
 # 这是用户批准的第三方。执行前先打印三条警告并要确认。
 warp_manage() {
@@ -582,7 +579,7 @@ warp_manage() {
     err "警告（执行前请看清）："
     err "  1. WARP 会把 /etc/resolv.conf 重写成 1.1.1.1 / 8.8.8.8，"
     err "     与国内 DNS 基线（223.5.5.5 / 183.60.83.19）冲突，"
-    err "     用完请用「系统工具 → 7 优化 DNS 地址」改回国内 DNS。"
+    err "     用完请用「系统工具 → 4 优化 DNS 地址」改回国内 DNS。"
     err "  2. WARP 会改变出口 IP，不要在主力节点 / 代理节点上常驻。"
     err "  3. WARP 菜单里的 warp b 藏着 DD 重装，别误点。"
     echo
@@ -622,7 +619,7 @@ warp_manage() {
     local rc=$?
     rm -f -- "$tmp_script"
     echo
-    warn "提醒：如需恢复国内 DNS，请用「系统工具 → 7 优化 DNS 地址」选 2。"
+    warn "提醒：如需恢复国内 DNS，请用「系统工具 → 4 优化 DNS 地址」选 2。"
     pause
     trap - EXIT
     return "$rc"
@@ -678,10 +675,10 @@ self_update() {
 }
 
 # ══════════════════════════════════════════════════════════════════
-# 13. 系统工具（子菜单，只保留用户筛过的编号）
+# 6. 系统工具（子菜单）
 # ══════════════════════════════════════════════════════════════════
 
-# ── 13-1. 设置脚本启动快捷键 ──────────────────────────────────────
+# ── 6-1. 设置脚本启动快捷键 ──────────────────────────────────────
 settings_shortcut() {
     need_root || return 1
     local name="" target="" shadow=""
@@ -721,7 +718,7 @@ settings_shortcut() {
     pause
 }
 
-# ── 13-2. 修改登录密码 ────────────────────────────────────────────
+# ── 6-2. 修改登录密码 ────────────────────────────────────────────
 settings_passwd() {
     need_root || return 1
     box_title "修改登录密码"
@@ -736,11 +733,10 @@ settings_passwd() {
     pause
 }
 
-# ── 13-6. 修改 SSH 连接端口 ───────────────────────────────────────
-# 照 kejilion 的 new_ssh_port 思路，改了三处：
-# ① 不删 /etc/ssh/sshd_config.d/*（kejilion 的 correct_ssh_config
-#    会清空这些配置）；② 改前先 sshd -t 校验，改后回读验证并确认
-#    新端口在监听；③ 不卸载 ufw/firewalld，改后尽量放行新端口。
+# ── 6-3. 修改 SSH 连接端口 ───────────────────────────────────────
+# 改 SSH 端口：① 不删 /etc/ssh/sshd_config.d/*；
+# ② 改前先 sshd -t 校验，改后回读验证并确认新端口在监听；
+# ③ 不卸载 ufw/firewalld，改后尽量放行新端口。
 settings_ssh_port() {
     need_root || return 1
     require_debian_ubuntu || return 1
@@ -859,9 +855,9 @@ dns_resolve_test() {
     fi
 }
 
-# ── 13-7. 优化 DNS 地址 ───────────────────────────────────────────
-# 照 kejilion 的 set_dns_ui / set_dns：重写 /etc/resolv.conf 后
-# chattr +i 加锁。v6 DNS 只在有全局 IPv6 时才写。
+# ── 6-4. 优化 DNS 地址 ───────────────────────────────────────────
+# 优化 DNS：重写 /etc/resolv.conf 后 chattr +i 加锁。
+# v6 DNS 只在有全局 IPv6 时才写。
 set_dns_write() {
     # 参数：$1 $2 为 v4 的两个 DNS，$3 $4 为 v6 的两个 DNS
     local dns1_ipv4="$1" dns2_ipv4="$2" dns1_ipv6="$3" dns2_ipv6="$4"
@@ -940,11 +936,11 @@ settings_dns() {
     done
 }
 
-# ── 13-8. 一键重装系统（仅空机器） ────────────────────────────────
-# 照 kejilion 的 dd_xitong：Linux 走 bin456789 的 reinstall.sh，
-# Windows 走 leitbogioro 的 InstallNET.sh。改了三处：
-# ① 只保留常用系统；② 必须输入确认口令才执行；③ 下载时不加
-# --no-check-certificate，保持 TLS 校验。
+# ── 6-5. 一键重装系统（仅空机器） ────────────────────────────────
+# 一键重装系统：Linux 走 bin456789 的 reinstall.sh，
+# Windows 走 leitbogioro 的 InstallNET.sh。只保留常用系统；
+# 必须输入确认口令才执行；下载时不加 --no-check-certificate，
+# 保持 TLS 校验。
 dd_download() {
     # $1 = URL，$2 = 保存路径
     local url="$1" dest="$2"
@@ -1041,10 +1037,9 @@ settings_dd() {
     confirm "现在重启吗？" && reboot
 }
 
-# ── 13-10. 切换优先 ipv4/ipv6（只做 IPv4 优先） ────────────────────
-# 照 kejilion 的 prefer_ipv4：往 /etc/gai.conf 写
-# precedence ::ffff:0:0/96  100。子项 2（删整个 gai.conf）和
-# 子项 3（第三方 v6.sh 管道执行）都不要。
+# ── 6-6. 切换优先 ipv4/ipv6（只做 IPv4 优先） ────────────────────
+# 切换优先 IPv4：往 /etc/gai.conf 写
+# precedence ::ffff:0:0/96  100（只做 IPv4 优先）。
 settings_ipv4_first() {
     need_root || return 1
     box_title "切换优先 IPv4"
@@ -1067,7 +1062,7 @@ settings_ipv4_first() {
     pause
 }
 
-# ── 13-11. 查看端口占用状态（只读） ──────────────────────────────
+# ── 6-7. 查看端口占用状态（只读） ──────────────────────────────
 settings_ports() {
     box_title "端口占用状态（只读）"
     ss -tulnp 2>/dev/null || ss -tuln 2>/dev/null || {
@@ -1078,10 +1073,9 @@ settings_ports() {
     pause
 }
 
-# ── 13-12. 修改虚拟内存大小 ──────────────────────────────────────
-# 照 kejilion 的 add_swap，改了三处：
-# ① 不用 wipefs 销毁 swap 分区，只 swapoff 停用、删 /swapfile、
-#    只清 fstab 里 /swapfile 的行（swap 分区行保留）；
+# ── 6-8. 修改虚拟内存大小 ──────────────────────────────────────
+# 修改虚拟内存：① 不用 wipefs 销毁 swap 分区，只 swapoff 停用、
+# 删 /swapfile、只清 fstab 里 /swapfile 的行（swap 分区行保留）；
 # ② fallocate 失败时回退 dd 创建；
 # ③ 先建新文件再停旧的，新的起不来就恢复旧 swap。
 add_swap() {
@@ -1173,7 +1167,7 @@ settings_swap() {
     pause
 }
 
-# ── 13-15. 系统时区调整 ──────────────────────────────────────────
+# ── 6-9. 系统时区调整 ──────────────────────────────────────────
 settings_timezone() {
     need_root || return 1
     local choice="" zone="" cur_zone=""
@@ -1225,11 +1219,10 @@ settings_timezone() {
     pause
 }
 
-# ── 13-16. 设置 BBR3 加速（XanMod 内核，仅 x86_64） ────────────────
-# 照 kejilion 的 bbrv3() 的 x86_64 路径，改了两处：
-# ① ARM64 不再走 jhb.ovh 第三方管道脚本，直接拒绝并说明；
-# ② XanMod 密钥只从官方 dl.xanmod.org 拉，失败就报错退出，
-#    不再回退到 kejilion 仓库里的 key。
+# ── 6-10. 设置 BBR3 加速（XanMod 内核，仅 x86_64） ────────────────
+# 设置 BBR3 加速（XanMod 内核，仅 x86_64）：
+# ① ARM64 不走第三方管道脚本，直接拒绝并说明；
+# ② XanMod 密钥只从官方 dl.xanmod.org 拉，失败就报错退出。
 # 门槛：根分区可用空间 >= 3GB；无 swap 时自动建 1GB swap。
 # 支持的系统代号（XanMod 官方 APT 源）：bookworm trixie forky sid
 # noble plucky questing resolute；
@@ -1404,8 +1397,8 @@ settings_bbr3() {
     local cpu_arch="" sub_choice=""
     cpu_arch="$(uname -m)"
     if [ "$cpu_arch" = "aarch64" ] || [ "$cpu_arch" = "arm64" ]; then
-        err "ARM64 机器没有可信的 XanMod 官方 APT 路径，kejilion 的 ARM 分支"
-        err "是执行第三方个人脚本（jhb.ovh），本工具箱不提供，请勿使用。"
+        err "ARM64 机器没有可信的 XanMod 官方 APT 路径。"
+        err "ARM 分支是执行第三方个人脚本（jhb.ovh），本工具箱不提供，请勿使用。"
         pause; return 1
     fi
     if [ "$cpu_arch" != "x86_64" ]; then
@@ -1446,7 +1439,7 @@ settings_bbr3() {
     fi
 }
 
-# ── 13-18. 修改主机名 ─────────────────────────────────────────────
+# ── 6-11. 修改主机名 ─────────────────────────────────────────────
 # hostnamectl 改名 + 同步 /etc/hostname；/etc/hosts 里 127.0.0.1 与
 # ::1 两行的旧主机名替换成新的（只换主机名本身，保留 localhost
 # 等其他别名，改前备份）。
@@ -1502,9 +1495,9 @@ settings_hostname() {
     pause
 }
 
-# ── 13-19. 切换系统更新源 ─────────────────────────────────────────
+# ── 6-12. 切换系统更新源 ─────────────────────────────────────────
 # 用 linuxmirrors 脚本换源（第三方脚本，执行前会警告并要确认）。
-# 与 kejilion 不同：不自动查 ipinfo.io 判断国家，由用户自己选。
+# 不自动查 ipinfo.io 判断国家，由用户自己选。
 # 换源前先下载到临时文件，打印大小与 SHA-256，确认后再执行；
 # 参数固定 --backup true（换源前备份原配置）。
 settings_mirror() {
@@ -1572,12 +1565,11 @@ settings_mirror() {
     pause
 }
 
-# ── 13-22. SSH 防御程序 fail2ban ───────────────────────────────────
+# ── 6-13. SSH 防御程序 fail2ban ───────────────────────────────────
 # 装 fail2ban + rsyslog；默认参数 bantime=10m、findtime=10m、
 # maxretry=5（用户标准），写 /etc/fail2ban/jail.d/sshd.local；
 # 默认开启 recidive 监狱：1 天内被封 5 次 → 封 1 周。
-# 与 kejilion 不同：卸载只停服务、删包，不 rm -rf /etc/fail2ban，
-# 配置保留。
+# 卸载只停服务、删包，不 rm -rf /etc/fail2ban，配置保留。
 F2B_SSHD_LOCAL="/etc/fail2ban/jail.d/sshd.local"
 F2B_RECIDIVE_LOCAL="/etc/fail2ban/jail.d/recidive.local"
 
@@ -1810,10 +1802,9 @@ settings_fail2ban() {
     done
 }
 
-# ── 13-28. Linux 系统内核参数优化（基线预设） ─────────────────────
-# 照 kejilion 的 Kernel_optimize / _kernel_optimize_core 的固定预设，
-# 只保留 5 个模式 + 还原默认；子项 7（管道执行远程 network-optimize.sh）
-# 不要。写到 /etc/sysctl.d/99-vps-toolbox-optimize.conf。
+# ── 6-14. Linux 系统内核参数优化（基线预设） ─────────────────────
+# 内核参数优化（基线预设）：只保留 5 个模式 + 还原默认。
+# 写到 /etc/sysctl.d/99-vps-toolbox-optimize.conf。
 #
 # ！！！分工边界！！！
 # 本项只给基线初始值，只在新机初始化、跑 vps-tune 之前用。
@@ -2137,8 +2128,8 @@ settings_kernel_optimize() {
     done
 }
 
-# ── 13-41. 系统日志管理工具 ───────────────────────────────────────
-# 照 kejilion 的 log_menu，以只读查看为主，清理走 journalctl 安全方式。
+# ── 6-15. 系统日志管理工具 ───────────────────────────────────────
+# 系统日志管理：以只读查看为主，清理走 journalctl 安全方式。
 settings_logs() {
     local choice="" count="" svc="" c=""
     while true; do
@@ -2235,8 +2226,8 @@ settings_logs() {
     done
 }
 
-# ── 13-42. 系统变量管理工具 ───────────────────────────────────────
-# 照 kejilion 的 env_menu：查看已生效变量与配置文件里的变量，
+# ── 6-16. 系统变量管理工具 ───────────────────────────────────────
+# 系统变量管理：查看已生效变量与配置文件里的变量，
 # 可 nano 编辑、source 重载（重载只对当前脚本会话生效，
 # 新登录的 shell 才会用新值）。
 settings_env() {
@@ -2363,7 +2354,7 @@ settings_env() {
     done
 }
 
-# ── 13-98. 重启服务器 ─────────────────────────────────────────────
+# ── 6-17. 重启服务器 ─────────────────────────────────────────────
 settings_reboot() {
     need_root || return 1
     box_title "重启服务器"
@@ -2376,7 +2367,7 @@ settings_reboot() {
     fi
 }
 
-# ── 13-101. 命令高级用法（只读帮助） ──────────────────────────────
+# ── 6-18. 命令高级用法（只读帮助） ──────────────────────────────
 show_help() {
     cls
     box_title "vps-toolbox 命令用法（v$VERSION）"
@@ -2398,21 +2389,21 @@ show_help() {
     echo
     echo "主菜单："
     echo "  1 系统信息查询  2 系统更新  3 系统清理"
-    echo "  5 BBR 管理      7 WARP 管理  13 系统工具"
+    echo "  4 BBR 管理      5 WARP 管理  6 系统工具"
     echo "  99 卸载脚本     100 更新工具箱"
     echo "  0 退出脚本"
     echo
-    echo "系统工具子菜单（保留的编号）："
-    echo "  1 快捷键  2 改密码  6 改 SSH 端口  7 DNS  8 重装系统"
-    echo "  10 IPv4 优先  11 端口占用  12 swap  15 时区  16 BBRv3"
-    echo "  18 主机名  19 换源  22 fail2ban  28 内核参数优化"
-    echo "  41 日志管理  42 环境变量  98 重启  101 帮助"
+    echo "系统工具子菜单："
+    echo "  1 快捷键  2 改密码  3 改 SSH 端口  4 DNS  5 重装系统"
+    echo "  6 IPv4 优先  7 端口占用  8 swap  9 时区  10 BBRv3"
+    echo "  11 主机名  12 换源  13 fail2ban  14 内核参数优化"
+    echo "  15 日志管理  16 环境变量  17 重启  18 帮助"
     echo
     echo "新机初始化建议顺序："
-    echo "  7（DNS 国内）→ 10（IPv4 优先）→ 12（swap 2048M）"
-    echo "  → 15（上海时区）→ 18（主机名）→ 16（XanMod BBRv3，仅 x86 新机）"
-    echo "  → 28（基线预设，仅跑 vps-tune 之前）"
-    echo "  → 再跑 vps-tune 实测调优，调好后不再动 28 和 5。"
+    echo "  4（DNS 国内）→ 6（IPv4 优先）→ 8（swap 2048M）"
+    echo "  → 9（上海时区）→ 11（主机名）→ 10（XanMod BBRv3，仅 x86 新机）"
+    echo "  → 14（基线预设，仅跑 vps-tune 之前）"
+    echo "  → 再跑 vps-tune 实测调优，调好后不再动 14 和 4。"
     echo
     echo "隐私：本脚本零遥测、零对外上报、不查询 IP。"
     echo "------------------------"
@@ -2460,7 +2451,7 @@ settings_uninstall() {
     exit 0
 }
 
-# ── 13. 系统工具子菜单 ────────────────────────────────────────────
+# ── 6. 系统工具子菜单 ────────────────────────────────────────────
 settings_menu() {
     need_root || return 1
     require_debian_ubuntu || return 1
@@ -2471,28 +2462,28 @@ settings_menu() {
         cls
         left=(
             "  ${C_CYAN}1.${C_RESET}   设置脚本启动快捷键"
-            "  ${C_CYAN}6.${C_RESET}   修改 SSH 连接端口"
-            "  ${C_CYAN}8.${C_RESET}   一键重装系统（仅空机器）"
-            "  ${C_CYAN}11.${C_RESET}  查看端口占用状态"
-            "  ${C_CYAN}15.${C_RESET}  系统时区调整"
-            "  ${C_CYAN}18.${C_RESET}  修改主机名"
-            "  ${C_CYAN}22.${C_RESET}  SSH 防御程序 fail2ban"
-            "  ${C_CYAN}41.${C_RESET}  系统日志管理工具"
-            "  ${C_CYAN}98.${C_RESET}  重启服务器"
+            "  ${C_CYAN}3.${C_RESET}   修改 SSH 连接端口"
+            "  ${C_CYAN}5.${C_RESET}   一键重装系统（仅空机器）"
+            "  ${C_CYAN}7.${C_RESET}   查看端口占用状态"
+            "  ${C_CYAN}9.${C_RESET}   系统时区调整"
+            "  ${C_CYAN}11.${C_RESET}  修改主机名"
+            "  ${C_CYAN}13.${C_RESET}  SSH 防御程序 fail2ban"
+            "  ${C_CYAN}15.${C_RESET}  系统日志管理工具"
+            "  ${C_CYAN}17.${C_RESET}  重启服务器"
         )
         lw=$(( $(max_width "${left[@]}") + 2 ))
         lines=(
             "  ${C_BOLD}${C_CYAN}系统工具${C_RESET}"
             "---"
             "$(pad_to "${left[0]}" "$lw")${C_CYAN}2.${C_RESET}   修改登录密码"
-            "$(pad_to "${left[1]}" "$lw")${C_CYAN}7.${C_RESET}   优化 DNS 地址"
-            "$(pad_to "${left[2]}" "$lw")${C_CYAN}10.${C_RESET}  切换优先 IPv4/IPv6"
-            "$(pad_to "${left[3]}" "$lw")${C_CYAN}12.${C_RESET}  修改虚拟内存大小"
-            "$(pad_to "${left[4]}" "$lw")${C_CYAN}16.${C_RESET}  设置 BBR3 加速"
-            "$(pad_to "${left[5]}" "$lw")${C_CYAN}19.${C_RESET}  切换系统更新源"
-            "$(pad_to "${left[6]}" "$lw")${C_CYAN}28.${C_RESET}  内核参数优化（基线预设）"
-            "$(pad_to "${left[7]}" "$lw")${C_CYAN}42.${C_RESET}  系统变量管理工具"
-            "$(pad_to "${left[8]}" "$lw")${C_CYAN}101.${C_RESET} 命令高级用法"
+            "$(pad_to "${left[1]}" "$lw")${C_CYAN}4.${C_RESET}   优化 DNS 地址"
+            "$(pad_to "${left[2]}" "$lw")${C_CYAN}6.${C_RESET}   切换优先 IPv4/IPv6"
+            "$(pad_to "${left[3]}" "$lw")${C_CYAN}8.${C_RESET}   修改虚拟内存大小"
+            "$(pad_to "${left[4]}" "$lw")${C_CYAN}10.${C_RESET}  设置 BBR3 加速"
+            "$(pad_to "${left[5]}" "$lw")${C_CYAN}12.${C_RESET}  切换系统更新源"
+            "$(pad_to "${left[6]}" "$lw")${C_CYAN}14.${C_RESET}  内核参数优化（基线预设）"
+            "$(pad_to "${left[7]}" "$lw")${C_CYAN}16.${C_RESET}  系统变量管理工具"
+            "$(pad_to "${left[8]}" "$lw")${C_CYAN}18.${C_RESET}  命令高级用法"
             "---"
             "  ${C_CYAN}0.${C_RESET}   返回主菜单"
         )
@@ -2502,22 +2493,22 @@ settings_menu() {
         case "$choice" in
             1) settings_shortcut ;;
             2) settings_passwd ;;
-            6) settings_ssh_port ;;
-            7) settings_dns ;;
-            8) settings_dd ;;
-            10) settings_ipv4_first ;;
-            11) settings_ports ;;
-            12) settings_swap ;;
-            15) settings_timezone ;;
-            16) settings_bbr3 ;;
-            18) settings_hostname ;;
-            19) settings_mirror ;;
-            22) settings_fail2ban ;;
-            28) settings_kernel_optimize ;;
-            41) settings_logs ;;
-            42) settings_env ;;
-            98) settings_reboot ;;
-            101) show_help; pause ;;
+            3) settings_ssh_port ;;
+            4) settings_dns ;;
+            5) settings_dd ;;
+            6) settings_ipv4_first ;;
+            7) settings_ports ;;
+            8) settings_swap ;;
+            9) settings_timezone ;;
+            10) settings_bbr3 ;;
+            11) settings_hostname ;;
+            12) settings_mirror ;;
+            13) settings_fail2ban ;;
+            14) settings_kernel_optimize ;;
+            15) settings_logs ;;
+            16) settings_env ;;
+            17) settings_reboot ;;
+            18) show_help; pause ;;
             0|"") return 0 ;;
             *) echo "无效的选择。"; pause ;;
         esac
@@ -2538,9 +2529,9 @@ main_menu() {
             "  ${C_CYAN}1.${C_RESET}   系统信息查询"
             "  ${C_CYAN}2.${C_RESET}   系统更新"
             "  ${C_CYAN}3.${C_RESET}   系统清理"
-            "  ${C_CYAN}5.${C_RESET}   BBR 管理"
-            "  ${C_CYAN}7.${C_RESET}   WARP 管理"
-            "  ${C_CYAN}13.${C_RESET}  系统工具"
+            "  ${C_CYAN}4.${C_RESET}   BBR 管理"
+            "  ${C_CYAN}5.${C_RESET}   WARP 管理"
+            "  ${C_CYAN}6.${C_RESET}   系统工具"
             "  ${C_CYAN}99.${C_RESET}  卸载脚本"
             "  ${C_CYAN}100.${C_RESET} 更新工具箱"
             "---"
@@ -2553,9 +2544,9 @@ main_menu() {
             1) sys_info ;;
             2) sys_update ;;
             3) sys_clean ;;
-            5) bbr_enable ;;
-            7) warp_manage ;;
-            13) settings_menu ;;
+            4) bbr_enable ;;
+            5) warp_manage ;;
+            6) settings_menu ;;
             99) settings_uninstall ;;
             100) self_update ;;
             0|"") echo "再见。"; exit 0 ;;
