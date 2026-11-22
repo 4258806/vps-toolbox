@@ -186,3 +186,26 @@ InstaBox 上装完工具箱就留在机器里了（`tbox` 可用），未卸载�
 会话的真实情况。测试里菜单前有一行 `'unknown': I need something
 more specific.`，是 PTY 的 TERM 未设导致 `tput/clear` 的报错，
 用户真实终端 TERM 正常时不会出现，不影响菜单。
+
+## 框线风格验证（v1.0.4，2026-11-22 21:45–21:55）
+
+改动：主菜单、系统工具子菜单、BBR 页画整框，其余各页标题改成小框
+（`box_title`）；颜色定义改成 `$'\033...'` 存真实 ESC 字节，
+`dwidth` 用 `LC_ALL=C.UTF-8 wc -m` 量字符数（POSIX locale 下
+`wc -m` 按字节数、中文会被算宽、框撑大）；BBR 已是 bbr+fq 时
+直接提示已开启、不再问（避免在 vps-tune 调优过的机器上误点重写）。
+
+| 检查项 | 方法 | 结果 |
+|---|---|---|
+| 主菜单框线 | 沙箱 `printf '0\n' \| bash vps-toolbox.sh`，逐行量显示宽 | 通过，每行 37 列，边框与内容严丝合缝 |
+| 系统工具子菜单框线 | 沙箱 `printf '13\n0\n0\n' \| bash vps-toolbox.sh` | 通过，双栏排版保留，框线对齐 |
+| BBR 不支持内核 | 沙箱实测（内核只有 reno cubic） | 通过，“当前内核不支持 BBR”整框显示，54 列对齐 |
+| BBR 已开启 | 沙箱 mock sysctl（MOCK_CC=bbr MOCK_QDISC=fq） | 通过，显示“已开启，无需重复开启。”，不问确认、只读不写 |
+| BBR 开启流程 | 沙箱 mock sysctl（MOCK_CC=cubic），输 n 取消 | 通过，开启页整框显示（62 列对齐），取消后不写配置 |
+| 系统信息标题 | 沙箱 `bash vps-toolbox.sh info` | 通过，标题小框正常，正文保持原样 |
+| 静态检查 | `bash -n` + shellcheck（-S warning） | 通过，0 警告（中途修掉 1 个 SC2178：settings_logs 里的 `lines` 行数变量改名 `count`，避免和 box 用的 `lines` 数组撞名） |
+
+说明：框内容行里不要用 3 字节的非中文符号（→ ⚠ ✓ 等），会算宽
+1 列、框对不齐；`→` 只出现在普通 echo/warn/err 输出里（不进框），
+不影响对齐。`settings_logs` / `settings_env` 里的 `===` 小节分隔
+线保留（正文内分隔，不是标题）。
