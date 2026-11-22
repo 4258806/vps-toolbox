@@ -237,3 +237,20 @@ BBR / fscarmen WARP）逐张对比，觉得 13 号功能最多，要求全面检
 
 静态检查：`bash -n` + shellcheck（-S warning）0 警告。
 其余 45 个低问题未修，分批处理，不堵这一版。
+
+## 对比上游后补齐的功能（v1.0.6，2026-11-22 22:33–22:40）
+
+起因：用户把我们的 3、5、7、13 号菜单和上游（kejilion / Joey
+BBR / fscarmen WARP）逐张对比，确认筛过的功能都要补齐（筛掉的
+DD 系统与 13 号子项不加回来）。三处都是给已筛过的功能补信息，
+不加新功能、不扩大范围。
+
+| 位置 | 改动 | 验证 |
+|---|---|---|
+| 3 号清理 | 跑完加“清理小结”：磁盘可用（/）清理前 → 清理后、释放约多少 MB；journal 占用清理前 → 清理后。清理前后分别取 `df -m /` 可用 MB 与 `journalctl --disk-usage` 第 7 列；释放量为负时改报“清理期间有其他写入，净减少 X MB” | 沙箱实测 df/journal 取值命令（可用 7443 MB、journal 8.0M）；小结算术用模拟值验过（7000 → 7325，释放约 325 MB；journal 325.6M → 12.0M） |
+| 5 号 BBR | 加状态块：内核版本、BBR 版本、拥塞算法、队列算法。新增 `bbr_version()`，判定与 vps-tune 同一套：内核名含 xanmod/bbrv3 → v3，`modinfo tcp_bbr` version 字段 → v3/v1，兜底 v1。四行标签改短（拥塞算法 / 队列算法 / 内核版本 / BBR 版本）使值列对齐；已开启、不支持、待开启三页与开启后的回显都带状态 | 沙箱 mock：bbr+fq 已开启页 4 行对齐（48 列），modinfo version 1.0 → v1；mock 内核 7.3.5-xanmod1 → v3 |
+| 7 号 WARP | 确认前加一句“进去后先选语言：选 2 是简体中文（默认是英文）。” | 沙箱输 n 取消，提示行正常出现 |
+
+静态检查：`bash -n` + shellcheck（-S warning）0 警告。
+安全复审：三处改动只读系统状态（df、journalctl、sysctl、uname、
+modinfo），无新注入面、无 eval、无新执行路径。
