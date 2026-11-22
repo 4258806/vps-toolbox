@@ -278,3 +278,30 @@ source 前加 `[ -f ]` 保护；快捷键验证用 readlink 解析后比对。
 prune_backups（5 份留最新 3 份）、check_disk_space 在 df 失败时
 err 并 return 1、f2b 零时长拒绝、gai.conf 值 50 识别并修正为
 100、主菜单冒烟正常；时区 /etc/localtime 软链校验实测通过。
+
+**订正（2026-11-22 23:32，主菜单审计时发现）**：上表“稳健性与清理”
+里写的“系统信息流量统计改算全部非 lo 网卡”实际没改上——v1.0.7
+文件里仍是旧的 eth/ens/enp/eno 白名单。抽查只验了几项，漏了这
+一处。已在 v1.0.8 补修（见下节），以后每批修完逐项 grep 核对。
+
+## 主菜单 1/2/3/5/7 + install.sh 全面审查与修复（v1.0.8，2026-11-22 23:32–23:41）
+
+起因：13 号审计结项后，主菜单 1/2/3/5/7 与 install.sh 还没审过；
+用户 2026-11-22 23:32 点名两个一起审，审完点名中 3 + 低 16 全修。
+审计结论：严重 0 / 高 0 / 中 3 / 低 16，另有 2 项已知接受的风险
+（WARP 与 install.sh 下载的第三方脚本无哈希校验）不修。
+
+| 级别 | 内容 |
+|---|---|
+| 中 1 | 1 号流量统计网卡白名单：只算 eth/ens/enp/eno，wlan/wg/tailscale 流量不算 → 改成 `NR>2 && $1 !~ /^lo:/` 算全部非 lo 网卡。**这是 v1.0.7 漏修的一项**（见上节订正），本版补上，旧白名单 grep 已 0 处 |
+| 中 2 | 3 号清理 apt 三命令（autoremove/clean）失败不报、最后照样“清理完成” → 加 apt_ok 标记，失败 warn，末尾按 apt_ok 决定 ok 还是 err；多余的 autoclean 一并删掉（clean 已清全部缓存） |
+| 中 3 | 5 号 BBR 的 ok 打早了：`sysctl -p` 成功就 ok，再回读 → 改成先回读 new_cc，是 bbr 才 ok，否则 err“拥塞算法仍是 X，BBR 未生效”并 return 1 |
+| 低 | install.sh 下载加超时（curl --max-time 60 / wget --timeout=60）；install.sh 装前验系统（只收 Debian/Ubuntu）；install.sh 建 tbox 前检查遮蔽（已存在且指向别处时拒绝）；1 号 CPU 占用除零（t==t1 时输出 0）、删装饰 `sleep 1`、os_info cut 改 `-f2-`、负载改读 /proc/loadavg；2 号提示被 hold 的包（apt-mark showhold）、更新完提示可用 3 号清理旧内核；5 号写配置前备份旧 conf（时间戳+PID，prune_backups 只留最新 3 份）、mkdir/写文件/`[ -s ]` 三处显式检查、cc 已是 bbr 但 qdisc 不是 fq 时红色提醒可能是 vps-tune 调过的；7 号 mktemp 后设 EXIT trap，中断也清理临时文件（5 处 return 前各加 `trap - EXIT`）；新增 `version` 子命令（`tbox version`）；子命令多余参数 warn 提示 |
+
+验证：`bash -n` 两文件通过、shellcheck（-S warning）0 警告；
+19 项逐项 grep 核对全部在位（不再只抽查）；沙箱实测 `tbox version`
+输出 `vps-toolbox 1.0.8`（升版后）、`version foo bar` 先 warn 多余
+参数再输出版本、`tbox info` 正常（CPU 9%、负载 0.14 0.31 0.45、
+流量 45.97M/2.80M）。install.sh 的新检查（OS、tbox 遮蔽）只做了
+代码核对，未在真机跑完整安装；3 号 apt 失败分支、5 号 BBR 回读
+失败分支未在沙箱触发过（需真机或 mock）。
