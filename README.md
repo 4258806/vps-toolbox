@@ -10,8 +10,8 @@
 curl -fsSL https://raw.githubusercontent.com/4258806/vps-toolbox/main/install.sh | sudo bash
 ```
 
-装到 `/usr/local/bin/vps-toolbox`，并建 `tbox` 快捷方式，装完直接
-打 `tbox` 就能用（大部分功能需要 root，请用 `sudo tbox`）。
+装到 `/usr/local/bin/vps-toolbox`，并建 `tbox` 快捷方式，装完验证
+通过后直接进主菜单，不用再打 `tbox`（没终端时只打印提示）。
 重新跑一遍就是更新。安装器只做下载、校验、安装两文件，
 不改任何系统配置，装前会做语法检查。
 
@@ -196,6 +196,8 @@ tbox help                   # 显示帮助
 
 ## 更新记录
 
+- **v1.0.3（2026-11-22）**：一键安装完验证通过后直接进主菜单，
+  不用再打 `tbox`（stdin 从 `/dev/tty` 接管；没终端时只打印提示）。
 - **v1.0.2（2026-11-22）**：新增一键安装 `install.sh`（装到
   `/usr/local/bin/vps-toolbox` + `tbox` 快捷方式，下载后先校验语法
   再安装，重新跑一遍就是更新）。
