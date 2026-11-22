@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.5"
+VERSION="1.0.6"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -356,12 +356,15 @@ sys_clean() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
+    local df_before="" df_after="" j_before="" j_after="" freed=0
     box_title "系统清理"
     echo "将执行：apt autoremove --purge、apt clean、apt autoclean，"
     echo "再清理 journal 日志（保留最近 7 天，且总量不超过 500M）。"
     confirm "确定清理吗？" || { echo "已取消。"; pause; return 0; }
     check_apt_free || { pause; return 1; }
 
+    df_before="$(df -m / 2>/dev/null | awk 'NR==2 {print $4}')"
+    j_before="$(journalctl --disk-usage 2>/dev/null | awk '{print $7}')"
     DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true
     DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y
     DEBIAN_FRONTEND=noninteractive apt-get clean -y
@@ -369,6 +372,21 @@ sys_clean() {
     journalctl --rotate 2>/dev/null || true
     journalctl --vacuum-time=7d 2>/dev/null || true
     journalctl --vacuum-size=500M 2>/dev/null || true
+    df_after="$(df -m / 2>/dev/null | awk 'NR==2 {print $4}')"
+    j_after="$(journalctl --disk-usage 2>/dev/null | awk '{print $7}')"
+    echo "------------------------"
+    echo "清理小结："
+    if [[ "$df_before" =~ ^[0-9]+$ ]] && [[ "$df_after" =~ ^[0-9]+$ ]]; then
+        freed=$((df_after - df_before))
+        if [ "$freed" -ge 0 ]; then
+            echo "  磁盘可用（/）：${df_before} MB → ${df_after} MB，释放约 ${freed} MB"
+        else
+            echo "  磁盘可用（/）：${df_before} MB → ${df_after} MB（清理期间有其他写入，净减少 $((-freed)) MB）"
+        fi
+    fi
+    if [ -n "$j_before" ] && [ -n "$j_after" ]; then
+        echo "  journal 占用：${j_before} → ${j_after}"
+    fi
     ok "系统清理完成。"
     pause
 }
@@ -381,23 +399,49 @@ sys_clean() {
 # 写到 /etc/sysctl.d/99-vps-toolbox-bbr.conf 并立即生效。
 # 注意分工：这里只给初始值；跑完 vps-tune 调优后不要再点本项，
 # 否则会把 vps-tune 按实测给的最终值重写回初始值。
+# BBR 版本判定（与 vps-tune 同一套办法）：内核名含 xanmod/bbrv3 → v3；
+# modinfo tcp_bbr 的 version 字段 → v3/v1；都读不到时主线默认 v1
+# （BBR 自 4.9 合入主线，一直是 v1）。
+bbr_version() {
+    local krel="" ver=""
+    krel="$(uname -r 2>/dev/null)"
+    if printf '%s' "$krel" | grep -qiE 'xanmod|bbrv3'; then
+        echo "v3"
+        return 0
+    fi
+    ver="$(modinfo tcp_bbr 2>/dev/null | awk -F': *' '/^version:/ {print $2; exit}')"
+    if [ -n "$ver" ]; then
+        if printf '%s' "$ver" | grep -q '^3'; then
+            echo "v3"
+        else
+            echo "v1"
+        fi
+        return 0
+    fi
+    echo "v1"
+}
+
 bbr_enable() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
     local conf="/etc/sysctl.d/99-vps-toolbox-bbr.conf"
-    local cur_cc cur_qdisc w
+    local cur_cc cur_qdisc w kernel bbr_ver
     local lines=()
     cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
     cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    kernel="$(uname -r 2>/dev/null)"
+    bbr_ver="$(bbr_version)"
 
     # 已经是 bbr+fq：直接提示已开启，不再问，避免在已调优的机器上误点重写。
     if [ "$cur_cc" = "bbr" ] && [ "$cur_qdisc" = "fq" ]; then
         lines=(
             "  ${C_BOLD}${C_CYAN}BBR 管理（基线开启）${C_RESET}"
             "---"
-            "  当前拥塞算法： ${C_GREEN}${cur_cc}${C_RESET}"
-            "  当前队列算法： ${C_GREEN}${cur_qdisc}${C_RESET}"
+            "  拥塞算法： ${C_GREEN}${cur_cc}${C_RESET}"
+            "  队列算法： ${C_GREEN}${cur_qdisc}${C_RESET}"
+            "  内核版本： ${kernel}"
+            "  BBR 版本： ${C_GREEN}${bbr_ver}${C_RESET}"
             ""
             "  ${C_GREEN}BBR 已开启，无需重复开启。${C_RESET}"
             ""
@@ -419,6 +463,7 @@ bbr_enable() {
             "  ${C_BOLD}${C_CYAN}BBR 管理（基线开启）${C_RESET}"
             "---"
             "  ${C_RED}当前内核不支持 BBR。${C_RESET}"
+            "  内核版本： ${kernel}"
             "  可用拥塞算法：$avail"
             "  没有 bbr，通常是微虚拟机（宿主机内核无 tcp_bbr）"
             "  或内核太旧。"
@@ -433,8 +478,10 @@ bbr_enable() {
     lines=(
         "  ${C_BOLD}${C_CYAN}BBR 管理（基线开启）${C_RESET}"
         "---"
-        "  当前拥塞算法： ${C_GREEN}${cur_cc}${C_RESET}"
-        "  当前队列算法： ${C_GREEN}${cur_qdisc}${C_RESET}"
+        "  拥塞算法： ${C_GREEN}${cur_cc}${C_RESET}"
+        "  队列算法： ${C_GREEN}${cur_qdisc}${C_RESET}"
+        "  内核版本： ${kernel}"
+        "  BBR 版本： ${C_GREEN}${bbr_ver}${C_RESET}"
         ""
         "  本项只写两个基线参数到"
         "  $conf："
@@ -465,8 +512,10 @@ bbr_enable() {
         pause; return 1
     }
     ok "BBR 已开启。"
-    echo "当前拥塞算法：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
-    echo "当前队列算法：$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    echo "拥塞算法：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    echo "队列算法：$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    echo "内核版本：$(uname -r 2>/dev/null)"
+    echo "BBR 版本：$(bbr_version)"
     pause
 }
 
@@ -486,6 +535,7 @@ warp_manage() {
     err "  3. WARP 菜单里的 warp b 藏着 DD 重装，别误点。"
     echo
     echo "将从 GitLab 下载 fscarmen 的 warp 脚本并执行（第三方脚本）。"
+    echo "进去后先选语言：选 2 是简体中文（默认是英文）。"
     confirm "确定继续吗？" || { echo "已取消。"; pause; return 0; }
 
     local tmp_script=""
