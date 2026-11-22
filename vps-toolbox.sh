@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.9"
+VERSION="1.0.10"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -626,6 +626,55 @@ warp_manage() {
     pause
     trap - EXIT
     return "$rc"
+}
+
+# ── 103. 更新工具箱（自更新） ────────────────────────────────────────
+# 重新下载 install.sh 并执行，等同于手动跑一键安装命令。
+# 装完 install.sh 会直接进新版主菜单；这里不返回旧菜单。
+self_update() {
+    need_root || return 1
+    require_debian_ubuntu || return 1
+
+    local tmp_installer="" installer_url=""
+    box_title "更新工具箱"
+    echo "将从 GitHub 下载最新版 install.sh 并执行安装（等同于一键安装命令）。"
+    echo "当前版本：v$VERSION"
+    confirm "确定更新吗？" || { echo "已取消。"; pause; return 0; }
+
+    tmp_installer="$(mktemp /tmp/vps-toolbox-update.XXXXXX)" || {
+        err "无法创建临时文件。"; pause; return 1
+    }
+    trap 'rm -f -- "$tmp_installer"' EXIT
+    installer_url="https://raw.githubusercontent.com/4258806/vps-toolbox/main/install.sh"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 60 "$installer_url" -o "$tmp_installer" || {
+            err "下载失败，请检查网络后重试。"
+            trap - EXIT
+            rm -f -- "$tmp_installer"; pause; return 1
+        }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --timeout=60 "$installer_url" -O "$tmp_installer" || {
+            err "下载失败，请检查网络后重试。"
+            trap - EXIT
+            rm -f -- "$tmp_installer"; pause; return 1
+        }
+    else
+        err "需要 curl 或 wget，请先安装。"
+        trap - EXIT
+        rm -f -- "$tmp_installer"; pause; return 1
+    fi
+    if [ ! -s "$tmp_installer" ] || ! bash -n "$tmp_installer"; then
+        err "下载的安装器为空或语法检查未通过，已取消。"
+        trap - EXIT
+        rm -f -- "$tmp_installer"; pause; return 1
+    fi
+    echo "正在执行安装器..."
+    bash "$tmp_installer"
+    local rc=$?
+    trap - EXIT
+    rm -f -- "$tmp_installer"
+    # 安装器装完会直接进新版主菜单；这里退出，不回旧菜单
+    exit "$rc"
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -2345,11 +2394,13 @@ show_help() {
     echo "  tbox settings               系统工具子菜单"
     echo "  tbox help                   显示本帮助"
     echo "  tbox version                显示版本号"
+    echo "  tbox self-update            更新工具箱到最新版"
     echo
     echo "主菜单："
     echo "  1 系统信息查询  2 系统更新  3 系统清理"
     echo "  5 BBR 管理      7 WARP 管理  13 系统工具"
-    echo "  102 卸载脚本    0 退出脚本"
+    echo "  102 卸载脚本    103 更新工具箱"
+    echo "  0 退出脚本"
     echo
     echo "系统工具子菜单（保留的编号）："
     echo "  1 快捷键  2 改密码  6 改 SSH 端口  7 DNS  8 重装系统"
@@ -2490,6 +2541,7 @@ main_menu() {
             "  ${C_CYAN}7.${C_RESET}   WARP 管理"
             "  ${C_CYAN}13.${C_RESET}  系统工具"
             "  ${C_CYAN}102.${C_RESET} 卸载脚本"
+            "  ${C_CYAN}103.${C_RESET} 更新工具箱"
             "---"
             "  ${C_CYAN}0.${C_RESET}   退出脚本"
         )
@@ -2504,6 +2556,7 @@ main_menu() {
             7) warp_manage ;;
             13) settings_menu ;;
             102) settings_uninstall ;;
+            103) self_update ;;
             0|"") echo "再见。"; exit 0 ;;
             *) echo "无效的选择。"; pause ;;
         esac
@@ -2521,12 +2574,13 @@ if [ "$#" -gt 1 ]; then
 fi
 
 case "$1" in
-    info)     sys_info ;;
-    update)   sys_update ;;
-    clean)    sys_clean ;;
-    bbr)      bbr_enable ;;
-    warp)     warp_manage ;;
-    settings) settings_menu ;;
+    info)        sys_info ;;
+    update)      sys_update ;;
+    clean)       sys_clean ;;
+    bbr)         bbr_enable ;;
+    warp)        warp_manage ;;
+    self-update) self_update ;;
+    settings)    settings_menu ;;
     help|--help|-h)
         show_help
         ;;
@@ -2534,7 +2588,7 @@ case "$1" in
         echo "vps-toolbox $VERSION"
         ;;
     *)
-        echo "用法：$0 [info|update|clean|bbr|warp|settings|help]"
+        echo "用法：$0 [info|update|clean|bbr|warp|self-update|settings|help|version]"
         echo "不带参数打开交互菜单；tbox help 查看完整说明。"
         exit 1
         ;;
