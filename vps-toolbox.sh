@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.4"
+VERSION="1.0.5"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -527,7 +527,7 @@ warp_manage() {
 # ── 13-1. 设置脚本启动快捷键 ──────────────────────────────────────
 settings_shortcut() {
     need_root || return 1
-    local name="" target=""
+    local name="" target="" shadow=""
     box_title "设置脚本启动快捷键"
     echo "将在 /usr/local/bin 下创建一个指向本脚本的软链。"
     read -r -p "快捷键名 [默认 tbox]: " name
@@ -536,7 +536,19 @@ settings_shortcut() {
         err "快捷键名只能用字母、数字、下划线、点、横线。"
         pause; return 1
     fi
+    if [ "$name" = "." ] || [ "$name" = ".." ] || [[ "$name" =~ ^[-.] ]]; then
+        err "快捷键名不能是 .、..，也不能以 - 或 . 开头。"
+        pause; return 1
+    fi
     target="/usr/local/bin/$name"
+    shadow="$(command -v "$name" 2>/dev/null || true)"
+    if [ -n "$shadow" ]; then
+        # 同名命令已存在：除非目标软链本来就指向本脚本（重建自己的快捷键），否则拒绝遮蔽
+        if ! [ -L "$target" ] || [ "$(readlink -f "$target" 2>/dev/null)" != "$SCRIPT_PATH" ]; then
+            err "已存在同名命令：$name（$shadow），建同名快捷键会遮蔽它，请换个名字。"
+            pause; return 1
+        fi
+    fi
     if [ -e "$target" ] && [ ! -L "$target" ]; then
         err "$target 已存在且不是软链，不覆盖。"
         pause; return 1
@@ -568,7 +580,7 @@ settings_ssh_port() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    local current_port="" new_port=""
+    local current_port="" new_port="" backup=""
     box_title "修改 SSH 连接端口"
     # 当前端口优先读 sshd_config（ss 的第一个监听端口未必是 SSH）
     current_port="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)"
@@ -590,12 +602,14 @@ settings_ssh_port() {
     fi
     confirm "确定把 SSH 端口从 $current_port 改为 $new_port 吗？" || { echo "已取消。"; pause; return 0; }
 
-    cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+    backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+    cp /etc/ssh/sshd_config "$backup"
     # 删掉现有的 Port 行，在文件首行插入新端口
     sed -i '/^[[:space:]]*#\?[[:space:]]*Port[[:space:]]/d' /etc/ssh/sshd_config
     sed -i "1i Port $new_port" /etc/ssh/sshd_config
     if ! sshd -t 2>/dev/null; then
-        err "配置校验失败（sshd -t），已停止，未重启 sshd；备份在 /etc/ssh/sshd_config.bak.*"
+        cp "$backup" /etc/ssh/sshd_config
+        err "配置校验失败（sshd -t），已恢复备份，未重启 sshd；备份在 $backup"
         pause; return 1
     fi
     # 尽量放行新端口（按本机已有的防火墙工具）
@@ -726,6 +740,7 @@ settings_dd() {
     while true; do
         cls
         box_title "一键重装系统"
+        echo
         err "只适合空机器！重装会清空整台机器，面板、Komari、1Panel、"
         err "下载站等全部消失。甲骨文机器重装请走控制台重建，不要用 DD。"
         echo "------------------------"
@@ -816,41 +831,56 @@ settings_ports() {
 }
 
 # ── 13-12. 修改虚拟内存大小 ──────────────────────────────────────
-# 照 kejilion 的 add_swap，改了两处：
+# 照 kejilion 的 add_swap，改了三处：
 # ① 不用 wipefs 销毁 swap 分区，只 swapoff 停用、删 /swapfile、
-#    清 fstab 里的 swap 行；② fallocate 失败时回退 dd 创建。
-# 注意：本项只改 swap 大小，不改 vm.swappiness；
-# 用户基线的 swappiness=10 请用「系统工具 → 28」里的预设设置。
+#    只清 fstab 里 /swapfile 的行（swap 分区行保留）；
+# ② fallocate 失败时回退 dd 创建；
+# ③ 先建新文件再停旧的，新的起不来就恢复旧 swap。
 add_swap() {
     local new_swap="$1"
     echo "正在重建 swapfile（${new_swap}M）..."
-    swapoff -a 2>/dev/null || true
-    rm -f /swapfile
-    if ! fallocate -l "${new_swap}M" /swapfile 2>/dev/null; then
+    # 先建新文件，旧 swap 一点不动；建失败直接返回，旧 swap 还在。
+    if ! fallocate -l "${new_swap}M" /swapfile.new 2>/dev/null; then
         echo "fallocate 不可用，改用 dd 创建（会慢一些）..."
-        dd if=/dev/zero of=/swapfile bs=1M count="$new_swap" status=none || {
-            err "创建 swapfile 失败。"
+        dd if=/dev/zero of=/swapfile.new bs=1M count="$new_swap" status=none || {
+            err "创建 swapfile 失败，旧 swap 未动。"
+            rm -f /swapfile.new
             return 1
         }
     fi
-    chmod 600 /swapfile
-    mkswap /swapfile >/dev/null || {
-        err "mkswap 失败。"
+    chmod 600 /swapfile.new
+    mkswap /swapfile.new >/dev/null || {
+        err "mkswap 失败，旧 swap 未动。"
+        rm -f /swapfile.new
         return 1
     }
-    swapon /swapfile || {
-        err "swapon 失败。"
-        return 1
-    }
-    # 清掉 fstab 里旧的 swap 行，只留新 swapfile
-    sed -i '/[[:space:]]swap[[:space:]]/d' /etc/fstab
-    echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
-    ok "虚拟内存大小已调整为 ${new_swap}M。"
+    # 新文件就绪，再停旧 swap 并把旧文件备份
+    swapoff -a 2>/dev/null || true
+    [ -f /swapfile ] && mv /swapfile /swapfile.old
+    mv /swapfile.new /swapfile
+    if swapon /swapfile; then
+        rm -f /swapfile.old
+        # 只删 fstab 里 /swapfile 的行，swap 分区行保留
+        sed -i '\|^[[:space:]]*/swapfile[[:space:]]|d' /etc/fstab
+        echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+        ok "虚拟内存大小已调整为 ${new_swap}M。"
+        return 0
+    fi
+    err "swapon 失败，正在恢复旧 swap..."
+    rm -f /swapfile
+    if [ -f /swapfile.old ]; then
+        mv /swapfile.old /swapfile
+        swapon /swapfile 2>/dev/null || true
+        err "新 swap 未能启用，已恢复旧 swap。"
+    else
+        err "新 swap 未能启用（之前没有旧 swap）。"
+    fi
+    return 1
 }
 
 settings_swap() {
     need_root || return 1
-    local choice="" new_swap=""
+    local choice="" new_swap="" avail_mb=""
     box_title "修改虚拟内存大小"
     echo "当前 swap："
     free -m | awk 'NR==1 || NR==3'
@@ -870,6 +900,15 @@ settings_swap() {
             read -r -p "请输入 swap 大小（MB，如 2048）: " new_swap
             if [[ ! "$new_swap" =~ ^[0-9]+$ ]] || [ "$new_swap" -lt 128 ]; then
                 err "大小无效（至少 128M）。"
+                pause; return 1
+            fi
+            if [ "$new_swap" -gt 16384 ]; then
+                err "大小无效：最大 16384M（16G）。"
+                pause; return 1
+            fi
+            avail_mb="$(df -m / 2>/dev/null | awk 'NR==2 {print $4}')"
+            if [[ "$avail_mb" =~ ^[0-9]+$ ]] && [ "$new_swap" -gt "$avail_mb" ]; then
+                err "大小无效：根分区可用空间只有 ${avail_mb}M，不够建 ${new_swap}M 的 swap。"
                 pause; return 1
             fi
             ;;
@@ -1106,7 +1145,7 @@ settings_bbr3() {
     if xanmod_installed; then
         while true; do
             cls
-            echo "您已安装 XanMod 的 BBRv3 内核"
+            box_title "您已安装 XanMod 的 BBRv3 内核"
             echo "当前内核版本：$(uname -r)"
             echo "------------------------"
             echo "1. 更新 BBRv3 内核    2. 卸载 BBRv3 内核"
@@ -1124,6 +1163,7 @@ settings_bbr3() {
     else
         cls
         box_title "设置 BBR3 加速"
+        echo
         echo "仅支持 Debian/Ubuntu（x86_64）。"
         echo "将安装 XanMod 内核并开启 BBRv3，装完需重启。"
         warn "注意：/ 根分区至少需要 3GB 可用空间；装完请用 uname -r 核对。"
@@ -1320,7 +1360,7 @@ f2b_install() {
 }
 
 f2b_basic_config() {
-    local bantime="" findtime="" maxretry=""
+    local bantime="" findtime="" maxretry="" backup=""
     if ! command -v fail2ban-client >/dev/null 2>&1; then
         err "未检测到 fail2ban，请先安装。"
         return 1
@@ -1332,13 +1372,38 @@ f2b_basic_config() {
     bantime="${bantime:-10m}"
     findtime="${findtime:-10m}"
     maxretry="${maxretry:-5}"
-    if [[ ! "$maxretry" =~ ^[0-9]+$ ]] || [ "$maxretry" -lt 1 ]; then
-        err "重试次数无效：$maxretry"
+    if [[ ! "$bantime" =~ ^[0-9]+[smhdw]?$ ]]; then
+        err "封禁时长无效：$bantime（格式如 600、10m、1h、1d、1w）。"
         return 1
     fi
+    if [[ ! "$findtime" =~ ^[0-9]+[smhdw]?$ ]]; then
+        err "时间窗口无效：$findtime（格式如 600、10m、1h、1d、1w）。"
+        return 1
+    fi
+    if [[ ! "$maxretry" =~ ^[0-9]+$ ]] || [ "$maxretry" -lt 1 ] || [ "$maxretry" -gt 100 ]; then
+        err "重试次数无效：$maxretry（1-100）。"
+        return 1
+    fi
+    # 写前备份，校验失败时恢复
+    if [ -f "$F2B_SSHD_LOCAL" ]; then
+        backup="${F2B_SSHD_LOCAL}.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$F2B_SSHD_LOCAL" "$backup"
+    fi
     f2b_write_sshd_local "$bantime" "$findtime" "$maxretry"
+    if ! fail2ban-client -t >/dev/null 2>&1; then
+        if [ -n "$backup" ]; then
+            cp "$backup" "$F2B_SSHD_LOCAL"
+            err "配置校验失败（fail2ban-client -t），已恢复备份 $backup，未生效。"
+        else
+            rm -f "$F2B_SSHD_LOCAL"
+            err "配置校验失败（fail2ban-client -t），已删除新写的文件，未生效。"
+        fi
+        return 1
+    fi
     ok "已写入：$F2B_SSHD_LOCAL"
-    fail2ban-client reload >/dev/null 2>&1 || true
+    if ! fail2ban-client reload >/dev/null 2>&1; then
+        warn "配置已写入并通过校验，但 reload 失败，请手工执行 fail2ban-client reload。"
+    fi
     sleep 1
     fail2ban-client status sshd 2>/dev/null || true
 }
@@ -1399,12 +1464,16 @@ settings_fail2ban() {
                 pause
                 ;;
             3)
-                echo "====== 最近被封 IP ======"
+                echo "------------------------"
+                echo "最近被封 IP"
+                echo "------------------------"
                 if command -v fail2ban-client >/dev/null 2>&1; then
                     fail2ban-client status sshd 2>/dev/null | grep -A 5 "Banned IP" || echo "（无）"
                 fi
                 echo
-                echo "====== 最近 20 行 fail2ban 日志 ======"
+                echo "------------------------"
+                echo "最近 20 行 fail2ban 日志"
+                echo "------------------------"
                 if [ -f /var/log/fail2ban.log ]; then
                     tail -n 20 /var/log/fail2ban.log
                 else
@@ -1694,25 +1763,25 @@ settings_kernel_optimize() {
     while true; do
         cls
         current_mode="$(grep "^# 模式:" "$KERNEL_OPT_CONF" 2>/dev/null | sed 's/# 模式: //' | awk -F'|' '{print $1}' | xargs)"
-        echo "Linux 系统内核参数优化（基线预设）"
+        box_title "Linux 系统内核参数优化（基线预设）"
         if [ -n "$current_mode" ]; then
             echo "当前模式：$current_mode"
         else
             echo "当前模式：未优化"
         fi
-        echo "------------------------------------------------"
+        echo "------------------------"
         err "分工边界：本项只给基线初始值，只在新机初始化、跑 vps-tune 之前用。"
         err "vps-tune 调好后绝不要再点本项，会把调优结果重写回固定预设。"
-        echo "------------------------------------------------"
+        echo "------------------------"
         echo "1. 高性能优化模式：最大化系统性能，激进的内存和网络参数。"
         echo "2. 均衡优化模式：性能与资源消耗之间取得平衡，适合日常使用。"
         echo "3. 网站优化模式：针对网站服务器优化，超高并发连接队列。"
         echo "4. 直播优化模式：针对直播推流优化，UDP 缓冲区加大，减少延迟。"
         echo "5. 游戏服优化模式：针对游戏服务器优化，低延迟优先。"
         echo "6. 还原默认设置：将系统设置还原为默认配置。"
-        echo "------------------------------------------------"
+        echo "------------------------"
         echo "0. 返回上一级选单"
-        echo "------------------------------------------------"
+        echo "------------------------"
         read -r -p "请输入你的选择: " choice
         case "$choice" in
             1)
@@ -1757,7 +1826,7 @@ settings_logs() {
     local choice="" count="" svc="" c=""
     while true; do
         cls
-        box_title "系统日志概览"
+        box_title "系统日志管理"
         echo "主机名：$(hostname)"
         echo "系统时间：$(date)"
         echo
@@ -1766,16 +1835,14 @@ settings_logs() {
         echo
         echo "[ journal 日志占用 ]"
         journalctl --disk-usage 2>/dev/null || echo "（无法读取）"
-        echo "========================================"
-        echo
-        box_title "系统日志管理菜单"
+        echo "------------------------"
         echo "1. 查看最近系统日志（journal）"
         echo "2. 查看指定服务日志"
         echo "3. 查看登录/安全日志"
         echo "4. 实时跟踪日志"
         echo "5. 清理旧 journal 日志"
         echo "0. 返回上一级选单"
-        echo "======================================="
+        echo "------------------------"
         read -r -p "请选择操作: " choice
         case "$choice" in
             1)
@@ -1797,10 +1864,14 @@ settings_logs() {
                 pause
                 ;;
             3)
-                echo "====== 最近登录日志 ======"
+                echo "------------------------"
+                echo "最近登录日志"
+                echo "------------------------"
                 last -n 10 2>/dev/null || echo "（无法读取）"
                 echo
-                echo "====== 认证日志 ======"
+                echo "------------------------"
+                echo "认证日志"
+                echo "------------------------"
                 if [ -f /var/log/auth.log ]; then
                     tail -n 20 /var/log/auth.log
                 else
@@ -1820,6 +1891,7 @@ settings_logs() {
                 else
                     echo "无效选择"
                 fi
+                pause
                 ;;
             5)
                 echo "清理 journal 日志（安全方式）"
@@ -1855,7 +1927,7 @@ settings_env() {
         cls
         box_title "当前已生效环境变量（节选）"
         printf "%-20s %s\n" "变量名" "值"
-        echo "-----------------------------------------------"
+        echo "------------------------"
         local v=""
         for v in USER HOME SHELL LANG PWD; do
             printf "%-20s %s\n" "$v" "${!v:-}"
@@ -1870,7 +1942,7 @@ settings_env() {
             [ -f "$f" ] || return
             echo
             echo ">>> 来源文件：$f"
-            echo "-----------------------------------------------"
+            echo "------------------------"
             grep -Ev '^\s*#|^\s*$' "$f" \
             | grep -E '^(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' \
             | while read -r line; do
@@ -1883,31 +1955,33 @@ settings_env() {
         parse_file_vars "$HOME/.bashrc"
         parse_file_vars "$HOME/.profile"
         echo
-        echo "==============================================="
+        echo "------------------------"
         pause
     }
 
     while true; do
         cls
-        echo "=========== 系统环境变量管理 =========="
-        echo "当前用户：$USER"
-        echo "--------------------------------------"
+        box_title "系统环境变量管理"
+        echo "当前用户：${USER:-未知}"
+        echo "------------------------"
         echo "1. 查看当前常用环境变量"
         echo "2. 查看 ~/.bashrc"
         echo "3. 查看 ~/.profile"
         echo "4. 编辑 ~/.bashrc"
         echo "5. 编辑 ~/.profile"
         echo "6. 重新加载环境变量（source，仅当前会话）"
-        echo "--------------------------------------"
+        echo "------------------------"
         echo "0. 返回上一级选单"
-        echo "--------------------------------------"
+        echo "------------------------"
         read -r -p "请选择操作: " choice
         case "$choice" in
             1) show_env_vars ;;
             2)
                 cls
                 if [ -f "$bashrc" ]; then
-                    echo "========== 查看文件：$bashrc =========="
+                    echo "------------------------"
+                    echo "查看文件：$bashrc"
+                    echo "------------------------"
                     cat -n "$bashrc"
                 else
                     echo "文件不存在：$bashrc"
@@ -1917,7 +1991,9 @@ settings_env() {
             3)
                 cls
                 if [ -f "$profile" ]; then
-                    echo "========== 查看文件：$profile =========="
+                    echo "------------------------"
+                    echo "查看文件：$profile"
+                    echo "------------------------"
                     cat -n "$profile"
                 else
                     echo "文件不存在：$profile"
@@ -1963,8 +2039,8 @@ settings_reboot() {
 # ── 13-101. 命令高级用法（只读帮助） ──────────────────────────────
 show_help() {
     cls
-    echo "vps-toolbox 命令用法（v$VERSION）"
-    echo "========================================"
+    box_title "vps-toolbox 命令用法（v$VERSION）"
+    echo "------------------------"
     echo "交互菜单："
     echo "  ./vps-toolbox.sh            打开主菜单"
     echo "  tbox                        打开主菜单（需先创建快捷键）"
@@ -1996,7 +2072,7 @@ show_help() {
     echo "  → 再跑 vps-tune 实测调优，调好后不再动 28 和 5。"
     echo
     echo "隐私：本脚本零遥测、零对外上报、不查询 IP。"
-    echo "========================================"
+    echo "------------------------"
 }
 
 # ── 13-102. 卸载脚本 ──────────────────────────────────────────────
@@ -2007,8 +2083,25 @@ settings_uninstall() {
     echo "不会动系统配置、不会删其他工具。"
     confirm "确定卸载吗？" || { echo "已取消。"; pause; return 0; }
     # 清 crontab 里相关行
+    # 先把 crontab -l 的结果落盘并判退出码：失败时绝不把空内容喂给 crontab -。
     if command -v crontab >/dev/null 2>&1; then
-        crontab -l 2>/dev/null | grep -v "vps-toolbox" | grep -v "vps_toolbox" | crontab - 2>/dev/null || true
+        local cron_tmp="" cron_out=""
+        cron_tmp="$(mktemp /tmp/vps-toolbox-cron.XXXXXX)" || {
+            err "无法创建临时文件，跳过 crontab 清理。"
+            cron_tmp=""
+        }
+        if [ -n "$cron_tmp" ]; then
+            cron_out="$(crontab -l 2>&1 > "$cron_tmp"; echo "rc=$?")"
+            if printf '%s' "$cron_out" | grep -q '^rc=0$'; then
+                grep -v "vps-toolbox" "$cron_tmp" | grep -v "vps_toolbox" | crontab - 2>/dev/null || true
+                echo "已清理 crontab 里 vps-toolbox 相关的行。"
+            elif printf '%s' "$cron_out" | grep -qi 'no crontab'; then
+                echo "当前没有 crontab，无需清理。"
+            else
+                err "读取 crontab 失败，未做任何改动，请手工检查 crontab。"
+            fi
+            rm -f -- "$cron_tmp"
+        fi
     fi
     # 删指向本脚本的软链
     local link=""
@@ -2030,22 +2123,35 @@ settings_menu() {
     require_debian_ubuntu || return 1
 
     local choice="" w
-    local lines=()
+    local lines=() left=() lw=0
     while true; do
         cls
+        left=(
+            "  ${C_CYAN}1.${C_RESET}   设置脚本启动快捷键"
+            "  ${C_CYAN}6.${C_RESET}   修改 SSH 连接端口"
+            "  ${C_CYAN}8.${C_RESET}   一键重装系统（仅空机器）"
+            "  ${C_CYAN}11.${C_RESET}  查看端口占用状态"
+            "  ${C_CYAN}15.${C_RESET}  系统时区调整"
+            "  ${C_CYAN}18.${C_RESET}  修改主机名"
+            "  ${C_CYAN}22.${C_RESET}  SSH 防御程序 fail2ban"
+            "  ${C_CYAN}41.${C_RESET}  系统日志管理工具"
+            "  ${C_CYAN}99.${C_RESET}  重启服务器"
+            "  ${C_CYAN}102.${C_RESET} 卸载脚本"
+        )
+        lw=$(( $(max_width "${left[@]}") + 2 ))
         lines=(
             "  ${C_BOLD}${C_CYAN}系统工具${C_RESET}"
             "---"
-            "  ${C_CYAN}1.${C_RESET}   设置脚本启动快捷键        ${C_CYAN}2.${C_RESET}   修改登录密码"
-            "  ${C_CYAN}6.${C_RESET}   修改 SSH 连接端口          ${C_CYAN}7.${C_RESET}   优化 DNS 地址"
-            "  ${C_CYAN}8.${C_RESET}   一键重装系统（仅空机器）   ${C_CYAN}10.${C_RESET}  切换优先 IPv4/IPv6"
-            "  ${C_CYAN}11.${C_RESET}  查看端口占用状态          ${C_CYAN}12.${C_RESET}  修改虚拟内存大小"
-            "  ${C_CYAN}15.${C_RESET}  系统时区调整              ${C_CYAN}16.${C_RESET}  设置 BBR3 加速"
-            "  ${C_CYAN}18.${C_RESET}  修改主机名                ${C_CYAN}19.${C_RESET}  切换系统更新源"
-            "  ${C_CYAN}22.${C_RESET}  SSH 防御程序 fail2ban      ${C_CYAN}28.${C_RESET}  内核参数优化（基线预设）"
-            "  ${C_CYAN}41.${C_RESET}  系统日志管理工具          ${C_CYAN}42.${C_RESET}  系统变量管理工具"
-            "  ${C_CYAN}99.${C_RESET}  重启服务器                ${C_CYAN}101.${C_RESET} 命令高级用法"
-            "  ${C_CYAN}102.${C_RESET} 卸载脚本"
+            "$(pad_to "${left[0]}" "$lw")${C_CYAN}2.${C_RESET}   修改登录密码"
+            "$(pad_to "${left[1]}" "$lw")${C_CYAN}7.${C_RESET}   优化 DNS 地址"
+            "$(pad_to "${left[2]}" "$lw")${C_CYAN}10.${C_RESET}  切换优先 IPv4/IPv6"
+            "$(pad_to "${left[3]}" "$lw")${C_CYAN}12.${C_RESET}  修改虚拟内存大小"
+            "$(pad_to "${left[4]}" "$lw")${C_CYAN}16.${C_RESET}  设置 BBR3 加速"
+            "$(pad_to "${left[5]}" "$lw")${C_CYAN}19.${C_RESET}  切换系统更新源"
+            "$(pad_to "${left[6]}" "$lw")${C_CYAN}28.${C_RESET}  内核参数优化（基线预设）"
+            "$(pad_to "${left[7]}" "$lw")${C_CYAN}42.${C_RESET}  系统变量管理工具"
+            "$(pad_to "${left[8]}" "$lw")${C_CYAN}101.${C_RESET} 命令高级用法"
+            "${left[9]}"
             "---"
             "  ${C_CYAN}0.${C_RESET}   返回主菜单"
         )
