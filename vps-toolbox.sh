@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.0.3
+# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.0.4
 #
 # 来源：参考 kejilion/sh（Apache 2.0）的功能与实现，自行重写，只保留
 #       真正用得上的部分；与 vps-tune 是分工关系，不是重复：
@@ -25,21 +25,84 @@
 #
 set -u
 
-VERSION="1.0.3"
+VERSION="1.0.4"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
-C_RESET='\033[0m'
-C_RED='\033[31m'
-C_GREEN='\033[32m'
-C_YELLOW='\033[33m'
-C_CYAN='\033[36m'
+# 用 $'' 存真实 ESC 字节（不是字面 \033），这样 printf '%s' 能直接
+# 输出、dwidth 的 sed 也能正确去掉颜色码再量宽度。
+C_RESET=$'\033[0m'
+C_RED=$'\033[31m'
+C_GREEN=$'\033[32m'
+C_YELLOW=$'\033[33m'
+C_CYAN=$'\033[36m'
+C_BOLD=$'\033[1m'
 
 # ── 通用小函数 ────────────────────────────────────────────────────
 ok()   { echo -e "${C_GREEN}$*${C_RESET}"; }
 warn() { echo -e "${C_YELLOW}$*${C_RESET}"; }
 err()  { echo -e "${C_RED}$*${C_RESET}" >&2; }
 info() { echo -e "${C_CYAN}$*${C_RESET}"; }
+
+# ── 框线 ──────────────────────────────────────────────────────────
+# 框线风格：Unicode 框线 + 青色边框。中文算 2 列，ASCII 与 2 字节
+# 符号算 1 列。内容行里不要用 3 字节的非中文符号（→ ⚠ ✓ 等），
+# 宽度会算多 1 列、框对不齐。
+# 显示宽度：先去掉 ANSI 颜色码再量；wc -m 量字符数必须用 UTF-8
+# locale，否则在 POSIX locale 下会按字节数、中文就被算宽了、框会撑大。
+dwidth() {
+    local s="$1" chars bytes
+    s=$(printf '%s' "$s" | sed 's/\x1b\[[0-9;]*m//g')
+    chars=$(printf '%s' "$s" | LC_ALL=C.UTF-8 wc -m)
+    bytes=$(printf '%s' "$s" | wc -c)
+    echo $(( chars + (bytes - chars) / 2 ))
+}
+repeat_char() {
+    local c="$1" n="$2" i out=""
+    for ((i=0; i<n; i++)); do out+="$c"; done
+    printf '%s' "$out"
+}
+pad_to() {
+    local s="$1" w="$2" dw n
+    dw=$(dwidth "$s")
+    n=$(( w - dw ))
+    [ "$n" -lt 0 ] && n=0
+    printf '%s%*s' "$s" "$n" ""
+}
+max_width() {
+    local m=0 w line
+    for line in "$@"; do
+        [ "$line" = "---" ] && continue
+        w=$(dwidth "$line")
+        [ "$w" -gt "$m" ] && m=$w
+    done
+    echo "$m"
+}
+# box <内宽> <行...>
+# "---" 表示横分隔线，"" 表示空行；内宽由调用方用 max_width 算好。
+box() {
+    local w="$1"; shift
+    local line
+    printf "${C_CYAN}┌%s┐${C_RESET}\n" "$(repeat_char '─' $(( w + 2 )))"
+    for line in "$@"; do
+        if [ "$line" = "---" ]; then
+            printf "${C_CYAN}├%s┤${C_RESET}\n" "$(repeat_char '─' $(( w + 2 )))"
+        elif [ "$line" = "" ]; then
+            printf "${C_CYAN}│${C_RESET} %s ${C_CYAN}│${C_RESET}\n" "$(repeat_char ' ' "$w")"
+        else
+            printf "${C_CYAN}│${C_RESET} %s ${C_CYAN}│${C_RESET}\n" "$(pad_to "$line" "$w")"
+        fi
+    done
+    printf "${C_CYAN}└%s┘${C_RESET}\n" "$(repeat_char '─' $(( w + 2 )))"
+}
+# 只给标题画个小框：box_title "系统更新"
+box_title() {
+    local title="$1" w
+    w=$(dwidth "  $title")
+    printf "${C_CYAN}┌%s┐${C_RESET}\n" "$(repeat_char '─' $(( w + 2 )))"
+    printf "${C_CYAN}│${C_RESET} %s ${C_CYAN}│${C_RESET}\n" "$(pad_to "  ${C_BOLD}${C_CYAN}$title${C_RESET}" "$w")"
+    printf "${C_CYAN}└%s┘${C_RESET}\n" "$(repeat_char '─' $(( w + 2 )))"
+}
 
 # Y/N 确认，默认否；返回 0 表示确认
 confirm() {
@@ -207,8 +270,7 @@ sys_info() {
     udp_count="$(ss -u 2>/dev/null | tail -n +2 | wc -l)"
 
     cls
-    echo "系统信息查询"
-    echo "-------------"
+    box_title "系统信息查询"
     echo "主机名：        $hostname"
     echo "系统版本：      $os_info"
     echo "Linux 版本：    $kernel_version"
@@ -248,8 +310,7 @@ sys_update() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    echo "系统更新"
-    echo "------------------------"
+    box_title "系统更新"
     warn "将执行 apt update + apt full-upgrade。"
     warn "full-upgrade 会安装新内核（linux-image），可能改变默认启动内核；"
     warn "已装 XanMod 的机器，重启后默认启动项可能变回官方内核，BBRv3 会失效。"
@@ -295,8 +356,7 @@ sys_clean() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    echo "系统清理"
-    echo "------------------------"
+    box_title "系统清理"
     echo "将执行：apt autoremove --purge、apt clean、apt autoclean，"
     echo "再清理 journal 日志（保留最近 7 天，且总量不超过 500M）。"
     confirm "确定清理吗？" || { echo "已取消。"; pause; return 0; }
@@ -326,29 +386,69 @@ bbr_enable() {
     require_debian_ubuntu || return 1
 
     local conf="/etc/sysctl.d/99-vps-toolbox-bbr.conf"
-    echo "BBR 管理（基线开启）"
-    echo "------------------------"
-    echo "当前拥塞算法：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
-    echo "当前队列算法：$(sysctl -n net.core.default_qdisc 2>/dev/null)"
-    echo
+    local cur_cc cur_qdisc w
+    local lines=()
+    cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+
+    # 已经是 bbr+fq：直接提示已开启，不再问，避免在已调优的机器上误点重写。
+    if [ "$cur_cc" = "bbr" ] && [ "$cur_qdisc" = "fq" ]; then
+        lines=(
+            "  ${C_BOLD}${C_CYAN}BBR 管理（基线开启）${C_RESET}"
+            "---"
+            "  当前拥塞算法： ${C_GREEN}${cur_cc}${C_RESET}"
+            "  当前队列算法： ${C_GREEN}${cur_qdisc}${C_RESET}"
+            ""
+            "  ${C_GREEN}BBR 已开启，无需重复开启。${C_RESET}"
+            ""
+            "  ${C_YELLOW}分工提醒：跑完 vps-tune 调优后不要点本项，${C_RESET}"
+            "  ${C_YELLOW}会重写调优结果。${C_RESET}"
+        )
+        w=$(max_width "${lines[@]}")
+        box "$w" "${lines[@]}"
+        pause; return 0
+    fi
+
     # 内核是否支持 BBR：先查可用算法列表，没有 bbr 就明说并跳过，
     # 不要先写配置再报“应用参数失败”（微虚拟机等宿主机内核无 tcp_bbr 时会走到这里）。
     # 读不到列表时（键不存在）不拦截，走老路、由后面的应用步骤兜底。
     local avail
     avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
     if [ -n "$avail" ] && ! printf '%s' "$avail" | grep -qw "bbr"; then
-        err "当前内核不支持 BBR。"
-        echo "可用拥塞算法：$avail"
-        echo "没有 bbr，通常是微虚拟机（宿主机内核无 tcp_bbr）或内核太旧。"
-        echo "如果刚装了 XanMod 内核，请重启后再试；微虚拟机装新内核也不生效，无法开启 BBR。"
+        lines=(
+            "  ${C_BOLD}${C_CYAN}BBR 管理（基线开启）${C_RESET}"
+            "---"
+            "  ${C_RED}当前内核不支持 BBR。${C_RESET}"
+            "  可用拥塞算法：$avail"
+            "  没有 bbr，通常是微虚拟机（宿主机内核无 tcp_bbr）"
+            "  或内核太旧。"
+            "  如果刚装了 XanMod 内核，请重启后再试；"
+            "  微虚拟机装新内核也不生效，无法开启 BBR。"
+        )
+        w=$(max_width "${lines[@]}")
+        box "$w" "${lines[@]}"
         pause; return 0
     fi
-    echo "本项只写两个基线参数到 $conf："
-    echo "  net.core.default_qdisc=fq"
-    echo "  net.ipv4.tcp_congestion_control=bbr"
-    echo "BBRv3 需要 XanMod 内核，请用「系统工具 → 16 设置 BBR3 加速」安装；"
-    echo "没有 XanMod 内核时这里开启的是 BBRv1。"
-    warn "分工提醒：跑完 vps-tune 调优后不要再点本项，会重写调优结果。"
+
+    lines=(
+        "  ${C_BOLD}${C_CYAN}BBR 管理（基线开启）${C_RESET}"
+        "---"
+        "  当前拥塞算法： ${C_GREEN}${cur_cc}${C_RESET}"
+        "  当前队列算法： ${C_GREEN}${cur_qdisc}${C_RESET}"
+        ""
+        "  本项只写两个基线参数到"
+        "  $conf："
+        "    net.core.default_qdisc=fq"
+        "    net.ipv4.tcp_congestion_control=bbr"
+        ""
+        "  BBRv3 需 XanMod 内核，用系统工具 16 设置 BBR3 加速安装；"
+        "  没有 XanMod 内核时，这里开启的是 BBRv1。"
+        ""
+        "  ${C_YELLOW}分工提醒：跑完 vps-tune 调优后不要点本项，${C_RESET}"
+        "  ${C_YELLOW}会重写调优结果。${C_RESET}"
+    )
+    w=$(max_width "${lines[@]}")
+    box "$w" "${lines[@]}"
     confirm "确定开启 BBR 吗？" || { echo "已取消。"; pause; return 0; }
 
     mkdir -p /etc/sysctl.d
@@ -377,8 +477,7 @@ warp_manage() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    echo "WARP 管理"
-    echo "------------------------"
+    box_title "WARP 管理"
     err "警告（执行前请看清）："
     err "  1. WARP 会把 /etc/resolv.conf 重写成 1.1.1.1 / 8.8.8.8，"
     err "     与国内 DNS 基线（223.5.5.5 / 183.60.83.19）冲突，"
@@ -429,8 +528,7 @@ warp_manage() {
 settings_shortcut() {
     need_root || return 1
     local name="" target=""
-    echo "设置脚本启动快捷键"
-    echo "------------------------"
+    box_title "设置脚本启动快捷键"
     echo "将在 /usr/local/bin 下创建一个指向本脚本的软链。"
     read -r -p "快捷键名 [默认 tbox]: " name
     name="${name:-tbox}"
@@ -454,8 +552,7 @@ settings_shortcut() {
 # ── 13-2. 修改登录密码 ────────────────────────────────────────────
 settings_passwd() {
     need_root || return 1
-    echo "修改登录密码"
-    echo "------------------------"
+    box_title "修改登录密码"
     echo "将修改 root 的登录密码。改完请自己记好，不要贴到别处。"
     confirm "确定修改密码吗？" || { echo "已取消。"; pause; return 0; }
     passwd
@@ -472,8 +569,7 @@ settings_ssh_port() {
     require_debian_ubuntu || return 1
 
     local current_port="" new_port=""
-    echo "修改 SSH 连接端口"
-    echo "------------------------"
+    box_title "修改 SSH 连接端口"
     # 当前端口优先读 sshd_config（ss 的第一个监听端口未必是 SSH）
     current_port="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)"
     if [ -z "$current_port" ]; then
@@ -568,8 +664,7 @@ settings_dns() {
     local choice=""
     while true; do
         cls
-        echo "优化 DNS 地址"
-        echo "------------------------"
+        box_title "优化 DNS 地址"
         echo "当前 DNS："
         cat /etc/resolv.conf 2>/dev/null || echo "（无法读取）"
         echo "------------------------"
@@ -630,8 +725,7 @@ settings_dd() {
     local choice="" phrase="" installer="" run_args=()
     while true; do
         cls
-        echo "一键重装系统"
-        echo "------------------------"
+        box_title "一键重装系统"
         err "只适合空机器！重装会清空整台机器，面板、Komari、1Panel、"
         err "下载站等全部消失。甲骨文机器重装请走控制台重建，不要用 DD。"
         echo "------------------------"
@@ -698,8 +792,7 @@ settings_dd() {
 # 子项 3（第三方 v6.sh 管道执行）都不要。
 settings_ipv4_first() {
     need_root || return 1
-    echo "切换优先 IPv4"
-    echo "------------------------"
+    box_title "切换优先 IPv4"
     if grep -q '^precedence ::ffff:0:0/96' /etc/gai.conf 2>/dev/null; then
         echo "已是 IPv4 优先（/etc/gai.conf 里已有该规则），无需重复设置。"
     else
@@ -713,8 +806,7 @@ settings_ipv4_first() {
 
 # ── 13-11. 查看端口占用状态（只读） ──────────────────────────────
 settings_ports() {
-    echo "端口占用状态（只读）"
-    echo "------------------------"
+    box_title "端口占用状态（只读）"
     ss -tulnape 2>/dev/null || ss -tuln 2>/dev/null || {
         err "ss 不可用。"
         pause; return 1
@@ -759,8 +851,7 @@ add_swap() {
 settings_swap() {
     need_root || return 1
     local choice="" new_swap=""
-    echo "修改虚拟内存大小"
-    echo "------------------------"
+    box_title "修改虚拟内存大小"
     echo "当前 swap："
     free -m | awk 'NR==1 || NR==3'
     echo "当前 swap 设备："
@@ -798,8 +889,7 @@ settings_swap() {
 settings_timezone() {
     need_root || return 1
     local choice="" zone=""
-    echo "系统时区调整"
-    echo "------------------------"
+    box_title "系统时区调整"
     echo "当前时区：$(timedatectl 2>/dev/null | grep "Time zone" | awk '{print $3}')"
     echo "------------------------"
     echo "1. Asia/Shanghai（上海）   2. Asia/Hong_Kong（香港）"
@@ -1033,8 +1123,7 @@ settings_bbr3() {
         done
     else
         cls
-        echo "设置 BBR3 加速"
-        echo "------------------------"
+        box_title "设置 BBR3 加速"
         echo "仅支持 Debian/Ubuntu（x86_64）。"
         echo "将安装 XanMod 内核并开启 BBRv3，装完需重启。"
         warn "注意：/ 根分区至少需要 3GB 可用空间；装完请用 uname -r 核对。"
@@ -1053,8 +1142,7 @@ settings_hostname() {
     need_root || return 1
     local old_name="" new_name="" hosts_bak=""
     old_name="$(hostname)"
-    echo "修改主机名"
-    echo "------------------------"
+    box_title "修改主机名"
     echo "当前主机名：$old_name"
     read -r -p "请输入新主机名: " new_name
     if [[ ! "$new_name" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
@@ -1109,8 +1197,7 @@ settings_mirror() {
     require_debian_ubuntu || return 1
 
     local choice="" source_args=() tmp_script=""
-    echo "切换系统更新源"
-    echo "------------------------"
+    box_title "切换系统更新源"
     warn "本质是下载执行第三方换源脚本（linuxmirrors.cn/main.sh），"
     warn "只有默认源慢或坏时才用；正常情况不要切。"
     echo "------------------------"
@@ -1238,8 +1325,7 @@ f2b_basic_config() {
         err "未检测到 fail2ban，请先安装。"
         return 1
     fi
-    echo "基础参数配置（SSH jail）"
-    echo "------------------------"
+    box_title "基础参数配置（SSH jail）"
     read -r -p "封禁时长 bantime（秒/分钟/小时，如 600 或 10m）[默认 10m]: " bantime
     read -r -p "时间窗口 findtime（秒/分钟/小时，如 600 或 10m）[默认 10m]: " findtime
     read -r -p "重试次数 maxretry（整数）[默认 5]: " maxretry
@@ -1275,8 +1361,7 @@ settings_fail2ban() {
     local choice=""
     while true; do
         cls
-        echo "SSH 防御程序 fail2ban"
-        echo "------------------------"
+        box_title "SSH 防御程序 fail2ban"
         if command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client ping >/dev/null 2>&1; then
             echo "状态：运行中"
             fail2ban-client status sshd 2>/dev/null | grep -E "Currently banned|Total banned" || true
@@ -1669,10 +1754,10 @@ settings_kernel_optimize() {
 # ── 13-41. 系统日志管理工具 ───────────────────────────────────────
 # 照 kejilion 的 log_menu，以只读查看为主，清理走 journalctl 安全方式。
 settings_logs() {
-    local choice="" lines="" svc="" c=""
+    local choice="" count="" svc="" c=""
     while true; do
         cls
-        echo "============= 系统日志概览 ============="
+        box_title "系统日志概览"
         echo "主机名：$(hostname)"
         echo "系统时间：$(date)"
         echo
@@ -1683,7 +1768,7 @@ settings_logs() {
         journalctl --disk-usage 2>/dev/null || echo "（无法读取）"
         echo "========================================"
         echo
-        echo "=========== 系统日志管理菜单 ==========="
+        box_title "系统日志管理菜单"
         echo "1. 查看最近系统日志（journal）"
         echo "2. 查看指定服务日志"
         echo "3. 查看登录/安全日志"
@@ -1694,10 +1779,10 @@ settings_logs() {
         read -r -p "请选择操作: " choice
         case "$choice" in
             1)
-                read -r -p "查看最近多少行日志？[默认 100]: " lines
-                lines="${lines:-100}"
-                if [[ ! "$lines" =~ ^[0-9]+$ ]]; then lines=100; fi
-                journalctl -n "$lines" --no-pager
+                read -r -p "查看最近多少行日志？[默认 100]: " count
+                count="${count:-100}"
+                if [[ ! "$count" =~ ^[0-9]+$ ]]; then count=100; fi
+                journalctl -n "$count" --no-pager
                 pause
                 ;;
             2)
@@ -1768,7 +1853,7 @@ settings_env() {
 
     show_env_vars() {
         cls
-        echo "========== 当前已生效环境变量（节选） =========="
+        box_title "当前已生效环境变量（节选）"
         printf "%-20s %s\n" "变量名" "值"
         echo "-----------------------------------------------"
         local v=""
@@ -1779,7 +1864,7 @@ settings_env() {
         echo "PATH:"
         echo "$PATH" | tr ':' '\n' | nl -ba
         echo
-        echo "========== 配置文件中定义的变量（解析） =========="
+        box_title "配置文件中定义的变量（解析）"
         parse_file_vars() {
             local f="$1"
             [ -f "$f" ] || return
@@ -1865,8 +1950,7 @@ settings_env() {
 # ── 13-99. 重启服务器 ─────────────────────────────────────────────
 settings_reboot() {
     need_root || return 1
-    echo "重启服务器"
-    echo "------------------------"
+    box_title "重启服务器"
     if confirm "现在重启服务器吗？"; then
         echo "正在重启..."
         reboot
@@ -1917,8 +2001,7 @@ show_help() {
 
 # ── 13-102. 卸载脚本 ──────────────────────────────────────────────
 settings_uninstall() {
-    echo "卸载 vps-toolbox"
-    echo "------------------------"
+    box_title "卸载 vps-toolbox"
     echo "将删除：crontab 里 vps-toolbox 相关的行、/usr/local/bin 下"
     echo "指向本脚本的快捷键、本脚本文件本身。"
     echo "不会动系统配置、不会删其他工具。"
@@ -1946,24 +2029,28 @@ settings_menu() {
     need_root || return 1
     require_debian_ubuntu || return 1
 
-    local choice=""
+    local choice="" w
+    local lines=()
     while true; do
         cls
-        echo "系统工具"
-        echo "------------------------"
-        echo "1.  设置脚本启动快捷键        2.  修改登录密码"
-        echo "6.  修改 SSH 连接端口          7.  优化 DNS 地址"
-        echo "8.  一键重装系统（仅空机器）   10. 切换优先 IPv4/IPv6"
-        echo "11. 查看端口占用状态          12. 修改虚拟内存大小"
-        echo "15. 系统时区调整              16. 设置 BBR3 加速"
-        echo "18. 修改主机名                19. 切换系统更新源"
-        echo "22. SSH 防御程序 fail2ban      28. 内核参数优化（基线预设）"
-        echo "41. 系统日志管理工具          42. 系统变量管理工具"
-        echo "99. 重启服务器                101. 命令高级用法"
-        echo "102. 卸载脚本"
-        echo "------------------------"
-        echo "0.  返回主菜单"
-        echo "------------------------"
+        lines=(
+            "  ${C_BOLD}${C_CYAN}系统工具${C_RESET}"
+            "---"
+            "  ${C_CYAN}1.${C_RESET}   设置脚本启动快捷键        ${C_CYAN}2.${C_RESET}   修改登录密码"
+            "  ${C_CYAN}6.${C_RESET}   修改 SSH 连接端口          ${C_CYAN}7.${C_RESET}   优化 DNS 地址"
+            "  ${C_CYAN}8.${C_RESET}   一键重装系统（仅空机器）   ${C_CYAN}10.${C_RESET}  切换优先 IPv4/IPv6"
+            "  ${C_CYAN}11.${C_RESET}  查看端口占用状态          ${C_CYAN}12.${C_RESET}  修改虚拟内存大小"
+            "  ${C_CYAN}15.${C_RESET}  系统时区调整              ${C_CYAN}16.${C_RESET}  设置 BBR3 加速"
+            "  ${C_CYAN}18.${C_RESET}  修改主机名                ${C_CYAN}19.${C_RESET}  切换系统更新源"
+            "  ${C_CYAN}22.${C_RESET}  SSH 防御程序 fail2ban      ${C_CYAN}28.${C_RESET}  内核参数优化（基线预设）"
+            "  ${C_CYAN}41.${C_RESET}  系统日志管理工具          ${C_CYAN}42.${C_RESET}  系统变量管理工具"
+            "  ${C_CYAN}99.${C_RESET}  重启服务器                ${C_CYAN}101.${C_RESET} 命令高级用法"
+            "  ${C_CYAN}102.${C_RESET} 卸载脚本"
+            "---"
+            "  ${C_CYAN}0.${C_RESET}   返回主菜单"
+        )
+        w=$(max_width "${lines[@]}")
+        box "$w" "${lines[@]}"
         read -r -p "请输入你的选择: " choice
         case "$choice" in
             1) settings_shortcut ;;
@@ -1993,22 +2080,25 @@ settings_menu() {
 
 # ── 主菜单 ────────────────────────────────────────────────────────
 main_menu() {
-    local choice=""
+    local choice="" w
+    local lines=()
     while true; do
         cls
-        echo "========================================"
-        echo "  VPS 工具箱 v$VERSION（精简自研版）"
-        echo "  零遥测 · 仅 Debian/Ubuntu"
-        echo "========================================"
-        echo "1.  系统信息查询"
-        echo "2.  系统更新"
-        echo "3.  系统清理"
-        echo "5.  BBR 管理"
-        echo "7.  WARP 管理"
-        echo "13. 系统工具"
-        echo "----------------------------------------"
-        echo "0.  退出脚本"
-        echo "========================================"
+        lines=(
+            "  ${C_BOLD}${C_CYAN}VPS 工具箱 v$VERSION（精简自研版）${C_RESET}"
+            "  零遥测 · 仅 Debian/Ubuntu"
+            "---"
+            "  ${C_CYAN}1.${C_RESET}   系统信息查询"
+            "  ${C_CYAN}2.${C_RESET}   系统更新"
+            "  ${C_CYAN}3.${C_RESET}   系统清理"
+            "  ${C_CYAN}5.${C_RESET}   BBR 管理"
+            "  ${C_CYAN}7.${C_RESET}   WARP 管理"
+            "  ${C_CYAN}13.${C_RESET}  系统工具"
+            "---"
+            "  ${C_CYAN}0.${C_RESET}   退出脚本"
+        )
+        w=$(max_width "${lines[@]}")
+        box "$w" "${lines[@]}"
         read -r -p "请输入你的选择: " choice
         case "$choice" in
             1) sys_info ;;
