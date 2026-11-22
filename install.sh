@@ -76,9 +76,11 @@ fi
 # 装完直接进主菜单，不用再打 tbox。
 # 安装器是管道进来的，stdin 是管道不是终端，所以用 /dev/tty 接管输入；
 # 没有终端时（比如纯脚本调用）就只打印提示、不启动菜单。
+# 注意：/dev/tty 存在不等于能打开（无控制终端时会打不开），菜单启动
+# 失败不算安装失败，只打印提示。
 if [ -e /dev/tty ]; then
     echo "正在打开工具箱主菜单……"
-    "$DEST" </dev/tty
+    "$DEST" </dev/tty || echo "装完直接运行 tbox 即可（大部分功能需要 root，请用 sudo tbox）。"
 else
     echo "装完直接运行 tbox 即可（大部分功能需要 root，请用 sudo tbox）。"
 fi
