@@ -254,3 +254,27 @@ DD 系统与 13 号子项不加回来）。三处都是给已筛过的功能补�
 静态检查：`bash -n` + shellcheck（-S warning）0 警告。
 安全复审：三处改动只读系统状态（df、journalctl、sysctl、uname、
 modinfo），无新注入面、无 eval、无新执行路径。
+
+## 13 号剩余 45 个低问题全修完（v1.0.7，2026-11-22 23:10–23:30）
+
+起因：v1.0.5 审计的 45 个功能类低问题当时分批处理、未修；用户
+2026-11-22 23:10 点名先修这 45 个。原审计逐条清单未落文件，
+本次是重审 13 号子菜单 + 共用 helper 后重新列出的 45 项。
+
+| 批 | 内容 | 关键项 |
+|---|---|---|
+| 正确性 / fail-open（10 项） | check_disk_space 读不到时 fail-open → 校验数字、失败即拒；add_swap `swapoff -a` 会停 swap 分区 → 只停 /swapfile；kernel_optimize_restore 删配置 ≠ 恢复运行时值 → 改文案并问是否重启；改 SSH 端口连 sshd_config.d 里的旧 Port 一起处理、重启失败恢复备份；DD 脚本按退出码报错、不再问重启；f2b 卸载两路都失败不再报 ok；日志选项 5 选错不再报“清理完成”；f2b 安装验 rsyslog 是否 active；bbr_enable_nopause 验写盘 | 1、20、37、9、10、16、33、40、32、24 |
+| 校验与反馈（10 项） | passwd 按退出码报成败；chattr +i 验结果（两处）；fail2ban 手动改配置后先 -t 再 reload；改 .bashrc/.profile 后 bash -n 检查；bantime/findtime 为 0 拒绝；Banned IP 全显示；跳过的 sysctl 参数列名；时区/主机名加非 systemd 兜底；swap 预设档也先查磁盘空间 | 8、13、36、43、34、35、38、23、29、21 |
+| 稳健性与清理（25 项） | 6 处下载加超时（curl --max-time 60 / wget --timeout=60）；卸载扫描全部指向本脚本的快捷键；四处时间戳备份新增 prune_backups、只留最新 3 份；系统信息流量统计改算全部非 lo 网卡；日志查服务名先校验字符集 + systemctl show 判存在；换源后 apt-get update 验证；DNS 改完 getent 解析测试；卸载 XanMod 前确认有兜底内核；apt update 失败拦截/警告；bbr3 已安装分支分“运行中内核 / 已安装 XanMod”两行；hosts 替换全换；gai.conf 校验值是 100；快捷键建完验证；check_apt_free 加 fuser 查锁；get_mem_mb 读不到出 0；dwidth 回退；日志行数非法先 warn；env source 失败 warn；内核备份时间戳加 PID；端口输出改 ss -tulnp；swap 警告文案改准；DD 删安装器临时文件；resolv.conf 换前备份；删 6 个 Mint 死代码代号 | 2、22、45、24、42、31、15、25、26、27、28、30、18、7、3、4、5、41、44、39、19、40、17、14、6 |
+
+改法与原清单不同的 8 处（均有原因，见实现记录）：SSH 恢复时 .d
+备份一起恢复；时区校验改读 /etc/localtime 软链（`date +%Z` 只给
+缩写、永远对不上区域名，会误报）；bbr3 命令半角括号修正；hosts
+全换改按行寻址全局替换（只加 g 换不掉）；bbr_enable_nopause 的
+sysctl 行末加 `|| true`；Banned IP 的 sed 恒返回 0；bash -n 与
+source 前加 `[ -f ]` 保护；快捷键验证用 readlink 解析后比对。
+
+验证：`bash -n` 通过、shellcheck（-S warning）0 警告；抽查实测
+prune_backups（5 份留最新 3 份）、check_disk_space 在 df 失败时
+err 并 return 1、f2b 零时长拒绝、gai.conf 值 50 识别并修正为
+100、主菜单冒烟正常；时区 /etc/localtime 软链校验实测通过。
