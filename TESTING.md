@@ -322,3 +322,27 @@ TESTING.md 里 v1.0.2 时代的“13-102 卸载”历史记录不动（当时确
 主菜单出现 102 行、子菜单不再有 102、`tbox version` 出 1.0.9、
 `tbox help` 主菜单区有 102 且子命令区有 version。卸载本身未在沙
 箱执行（会删脚本，只做代码核对）。
+
+## 自更新快捷键（v1.0.10，2026-11-22 23:54–23:58）
+
+用户要一个更新快捷键，不用每次手打一键安装命令。做法：新增
+`self_update`（主菜单 103 更新工具箱 + 子命令 `tbox self-update`），
+复用 install.sh——下载 install.sh 到临时文件（curl --max-time 60 /
+wget --timeout=60），验非空 + `bash -n`，再执行；装完 install.sh
+会直接进新版主菜单，self_update 随后 `exit`，不回旧菜单，避免嵌
+套。临时文件用 EXIT trap 清理（5 处 return 前 `trap - EXIT`，与
+warp_manage 同一套做法）；更新前要确认；装完显示当前版本号。
+help 页子命令区与主菜单区、README 的子命令清单/菜单清单/功能说
+明/更新记录同步改。
+
+验证：`bash -n` 通过、shellcheck（-S warning）0 警告；沙箱实测
+主菜单出现 103 行、`tbox help` 有 self-update 与 103、`tbox version`
+出 1.0.10；自更新取消路径实测正常（输 n 即取消，未下载）。
+端到端自更新在沙箱实测跑通过（setsid、无控制终端）：下载
+install.sh、执行、装到 /usr/local/bin、tbox help 验证通过；
+但装到的是 v1.0.9——刚推完 v1.0.10，raw.githubusercontent.com
+缓存（约 5 分钟）还没到，与手动一键命令同一行为，等缓存过后
+再跑就是 1.0.10。实测还抓到 install.sh 一处健壮性问题：`[ -e
+/dev/tty ]` 只判存在，无控制终端时打不开，`set -e` 下会让安装
+报失败（其实已装好）；已修成菜单启动失败只打印提示、不算安装
+失败（见 install.sh 注释），属 v1.0.10 的一部分。
