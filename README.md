@@ -4,6 +4,17 @@
 参考 kejilion/sh（Apache 2.0）的功能与实现自行重写，只保留真正
 用得上的部分，去掉了遥测、第三方脚本启动器和破坏性默认值。
 
+## 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/4258806/vps-toolbox/main/install.sh | sudo bash
+```
+
+装到 `/usr/local/bin/vps-toolbox`，并建 `tbox` 快捷方式，装完直接
+打 `tbox` 就能用（大部分功能需要 root，请用 `sudo tbox`）。
+重新跑一遍就是更新。安装器只做下载、校验、安装两文件，
+不改任何系统配置，装前会做语法检查。
+
 ## 与 vps-tune 的分工
 
 这是两个独立项目，不是重复：
@@ -185,6 +196,9 @@ tbox help                   # 显示帮助
 
 ## 更新记录
 
+- **v1.0.2（2026-11-22）**：新增一键安装 `install.sh`（装到
+  `/usr/local/bin/vps-toolbox` + `tbox` 快捷方式，下载后先校验语法
+  再安装，重新跑一遍就是更新）。
 - **v1.0.1（2026-11-22）**：5 BBR 开启先查内核支不支持 bbr，
   不支持（微虚拟机等宿主机内核无 tcp_bbr）就明说并跳过，
   不再先写配置再报“应用参数失败”。
