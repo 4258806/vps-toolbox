@@ -7,7 +7,7 @@
 # 做的事（只装两个文件，不改任何系统配置）：
 #   1. 从 GitHub 下载 vps-toolbox.sh 到临时文件，确认非空、语法通过；
 #   2. 装到 /usr/local/bin/vps-toolbox，加执行权限；
-#   3. 建 /usr/local/bin/tbox 快捷方式，装完直接打 tbox 就能用。
+#   3. 建 /usr/local/bin/gjx 快捷方式（另建 tbox 作兼容），装完直接打 gjx 就能用。
 # 重新跑一遍就是更新（会覆盖成最新版）。
 # 本脚本不收集、不发送任何信息；零遥测。
 
@@ -17,7 +17,8 @@ REPO="4258806/vps-toolbox"
 BRANCH="main"
 SCRIPT_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/vps-toolbox.sh"
 DEST="/usr/local/bin/vps-toolbox"
-LINK="/usr/local/bin/tbox"
+LINK="/usr/local/bin/gjx"
+LINK_COMPAT="/usr/local/bin/tbox"
 
 err() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -58,29 +59,32 @@ fi
 bash -n "$tmp" || { err "下载的脚本语法检查未通过，安装中止。"; exit 1; }
 
 install -m 0755 "$tmp" "$DEST"
-# tbox 已存在且不是指向上次安装的 vps-toolbox 时拒绝覆盖，避免遮蔽别的工具
-if [ -e "$LINK" ] && [ "$(readlink -f "$LINK" 2>/dev/null)" != "$DEST" ]; then
-    err "拒绝安装：$LINK 已存在且不是指向上次安装的 vps-toolbox（当前指向 $(readlink -f "$LINK" 2>/dev/null)），请先移走或改名再重装。"
-    exit 1
-fi
+# 快捷方式已存在且不是指向上次安装的 vps-toolbox 时拒绝覆盖，避免遮蔽别的工具
+for link in "$LINK" "$LINK_COMPAT"; do
+    if [ -e "$link" ] && [ "$(readlink -f "$link" 2>/dev/null)" != "$DEST" ]; then
+        err "拒绝安装：$link 已存在且不是指向上次安装的 vps-toolbox（当前指向 $(readlink -f "$link" 2>/dev/null)），请先移走或改名再重装。"
+        exit 1
+    fi
+done
 ln -sf "$DEST" "$LINK"
+ln -sf "$DEST" "$LINK_COMPAT"
 
 ok "vps-toolbox 已安装：$DEST"
-ok "快捷方式已创建：$LINK"
+ok "快捷方式已创建：$LINK（另有兼容快捷方式 $LINK_COMPAT）"
 if "$DEST" help >/dev/null 2>&1; then
-    ok "验证通过：tbox help 正常。"
+    ok "验证通过：gjx help 正常。"
 else
-    err "安装后验证未通过（tbox help 异常），请检查。"
+    err "安装后验证未通过（gjx help 异常），请检查。"
     exit 1
 fi
-# 装完直接进主菜单，不用再打 tbox。
+# 装完直接进主菜单，不用再打 gjx。
 # 安装器是管道进来的，stdin 是管道不是终端，所以用 /dev/tty 接管输入；
 # 没有终端时（比如纯脚本调用）就只打印提示、不启动菜单。
 # 注意：/dev/tty 存在不等于能打开（无控制终端时会打不开），菜单启动
 # 失败不算安装失败，只打印提示。
 if [ -e /dev/tty ]; then
     echo "正在打开工具箱主菜单……"
-    "$DEST" </dev/tty || echo "装完直接运行 tbox 即可（大部分功能需要 root，请用 sudo tbox）。"
+    "$DEST" </dev/tty || echo "装完直接运行 gjx 即可（大部分功能需要 root，请用 sudo gjx）。"
 else
-    echo "装完直接运行 tbox 即可（大部分功能需要 root，请用 sudo tbox）。"
+    echo "装完直接运行 gjx 即可（大部分功能需要 root，请用 sudo gjx）。"
 fi
