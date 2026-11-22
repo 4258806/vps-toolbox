@@ -75,3 +75,83 @@ printf '0\n' | bash vps-toolbox.sh
 ```
 
 三项都过，再上测试 VPS 验证改动的功能。
+
+## InstaBox 真机验证（2026-11-22）
+
+测试机：InstaBox 免费机器 agent-browser-4x37（机器 ID
+m_agq72cyqns5b4cvrngw2eylhn4），Firecracker 微虚拟机，Debian 13
+（trixie），systemd 257，x86_64 AMD EPYC 4 核 / 8GB 内存 / 16GB 磁盘，
+内核 6.18.60-instabox（宿主机提供）。SSH 用户为 `user`（UID 1000），
+sudo 免密；脚本用 `sudo bash /tmp/vps-toolbox.sh` 跑，菜单用管道输入
+驱动。机器 30 分钟闲置自动暂停，测试全程连续完成，未断线。
+
+注意：旧 SSH 令牌已失效（网关拒认证），测试前在控制台新建了一个
+永不过期的令牌“Muse SSH testing”，已存入 ~/.secrets/instabox-ssh-token
+（单行，600）。原有令牌未动。
+
+| 功能 | 结果 | 详情 |
+|---|---|---|
+| 1 系统信息 | 通过 | 主机名、Debian 13、内核、CPU、内存、swap、磁盘、流量（186M 接收，网卡匹配正常）、cubic/pfifo_fast、内外 IP、DNS、UTC 时区、运行时长都正常 |
+| 2 系统更新 | 通过 | 约 21 秒完成 apt update + full-upgrade，装了一批更新；无新内核（宿主机内核），无重启提示 |
+| 3 系统清理 | 通过 | autoremove 0 个可删、clean/autoclean 正常；journal 8M→11.7M（机器才 1 天大，无 7 天以上日志可清，增长是更新本身产生的日志） |
+| 5 BBR 开启 | **失败（环境限制）** | 见下方详述 |
+| 13-1 快捷键 | 通过 | `/usr/local/bin/tbox` → 脚本本身，`tbox help` 正常 |
+| 13-7 DNS | 通过 | 选 2 国内：resolv.conf 为 223.5.5.5 / 183.60.83.19 + v6 2400:3200::1 / 2400:da00::6666，`chattr +i` 已加锁；www.baidu.com 解析正常 |
+| 13-10 IPv4 优先 | 通过 | `/etc/gai.conf` 有 `precedence ::ffff:0:0/96  100` |
+| 13-11 端口占用 | 通过 | 列出 sshd:22、Xvnc:5901 及进程 |
+| 13-12 swap | 通过 | 选 2048M：`free -m` 显示 2047M，`/swapfile` 已启用；fstab 只有一行 swapfile。**副作用**：原有 4G `/data/swapfile` 被 swapoff 停用、移出 fstab，文件本身还留在磁盘上（4G 未删），见残留 |
+| 13-15 时区 | 通过 | 选 1 上海：`timedatectl` 显示 Asia/Shanghai |
+| 13-18 主机名 | 通过 | 改成 tbox-test：hostname、hostnamectl、/etc/hostname、/etc/hosts 两行一致，localhost 别名保留；已改回 instabox-agent-browser-4x37，留一个 /etc/hosts.bak.* |
+| 13-22 fail2ban 安装 | 通过 | `fail2ban-client status sshd` 与 recidive 正常；sshd.local 为 10m/10m/5；recidive.local 为 1w/1d/5；fail2ban 与 rsyslog 服务均为 active |
+| 13-22 fail2ban 封禁 | 通过 | `banip 203.0.113.1`（TEST-NET 段，未动真实 IP）后 Banned IP 列表与 nft 规则均有该 IP；`unbanip` 后清空 |
+| 13-22 fail2ban 改参数 | 通过 | 子项 4 改 bantime=1h 写入成功，再用默认空输入改回 10m/10m/5 |
+| 13-22 fail2ban 卸载 | 通过 | 服务停、包删，`/etc/fail2ban/jail.d/` 下 sshd.local 与 recidive.local 保留 |
+| 13-28 内核优化 | 通过 | 选 2 均衡：配置文件已写（模式 均衡优化模式，7964MB）；拥塞算法正确回落 cubic / fq_codel；逐项应用 52 项，跳过 1 项（default_qdisc，见 BBR 一节）；运行值 swappiness=30、somaxconn=4096、fin_timeout=30、rmem_max=16777216 均与预设一致；limits.conf 已加 vps-toolbox-optimize 段 |
+| 13-28 还原 | 通过（有保留） | 配置文件已删，limits.conf 段已清；**但运行值不重置**：swappiness 仍为 30（Debian 默认 60），要重启才恢复默认。还原只删配置，不管运行值 |
+| 13-41 日志 | 通过 | 选项 2 查 sshd 日志、选项 1 查最近日志正常；选项 5 清理选 1 后 journal 23.6M→11.7M |
+| 13-42 环境变量 | 部分通过 | 选项 1 查看、2/3 查 bashrc/profile、6 重载都正常（sudo 下看的是 /root 的文件）；选项 4/5 编辑打开 nano，需交互终端，管道测不了，未验证 |
+| 13-102 卸载 | 通过 | tbox 软链与脚本文件都删了，crontab 无残留行，`tbox` 命令已不存在 |
+| 13-2 改密码 | 跳过 | 没必要在测试机上改 |
+| 13-6 改 SSH 端口 | 跳过 | 会断掉 InstaBox 网关的 SSH 接入 |
+| 13-8 重装 | 跳过 | 会清空机器 |
+| 13-16 XanMod | 跳过 | 微虚拟机内核由宿主机提供，装了也不生效 |
+| 13-19 换源 | 跳过 | 默认源正常，无需换 |
+| 7 WARP | 跳过 | 条款禁公共 VPN 出口 |
+| 13-99 重启 | 跳过 | 有起不来风险 |
+| 分工边界（5 与 28） | 未单独测 | 5 与 28 的菜单/文件头警告在各自输出里都已看到；未跑 vps-tune，无需再点 |
+
+### 5 BBR 开启失败的根因（环境限制，不是脚本 bug）
+
+- 配置文件已正常写出：`/etc/sysctl.d/99-vps-toolbox-bbr.conf`（fq + bbr 两行）。
+- 但 `sysctl -p` / `sysctl -w` 写 `net.core.default_qdisc` 与
+  `net.ipv4.tcp_congestion_control` 都报 `No such file or directory`；
+  直接写 `/proc/sys/net/ipv4/tcp_congestion_control` 同样 ENOENT。
+- 对照：`echo 1 > /proc/sys/net/ipv4/ip_forward` 可以写（已改回 0），
+  证明不是权限问题，是宿主机内核没有把这两个 sysctl 键暴露给微虚拟机。
+- 另：`tcp_available_congestion_control` 只有 `reno cubic`，无 bbr
+  （宿主机内核无 tcp_bbr，`modprobe` 也没有装）。
+- 结论：InstaBox 微虚拟机改不了拥塞算法/队列算法，BBR 在此环境下
+  无法开启；真机 VPS 上应正常。**改进建议（未改脚本）**：`bbr_enable`
+  写配置前先查 `tcp_available_congestion_control` 里有没有 bbr，
+  没有就明确提示而不是先写文件再报“应用参数失败”。
+
+### 机器最终状态（测试结束时，2026-11-22 21:18 CST，仍 Running）
+
+- 主机名已恢复 instabox-agent-browser-4x37；时区 Asia/Shanghai；
+  DNS 国内且 +i 锁定；gai.conf 有 IPv4 优先规则。
+- swap：`/swapfile` 2048M 在用；原 `/data/swapfile` 4G 已停用、移出
+  fstab，文件还在磁盘上（占 4G），如需恢复可重新 `swapon` 并加回 fstab。
+- 残留文件：`/etc/sysctl.d/99-vps-toolbox-bbr.conf`（两行 bbr/fq，
+  在此机器上永远应用不上，`sysctl --system` 会报两行错；真机上无此问题）、
+  `/etc/fail2ban/jail.d/sshd.local` 与 `recidive.local`（包已卸）、
+  `/etc/hosts.bak.20261122211644`、rsyslog（fail2ban 安装时装的，服务在跑）。
+- 运行值残留：swappiness=30（28 还原后未重置，重启恢复 60）；
+  拥塞算法 cubic、队列 pfifo_fast（未变）。
+- 磁盘：4.9G→6.9G/16G（新增 /swapfile 2G + 系统更新），journal 11.7M。
+- 脚本与快捷键已卸载，crontab 干净。
+
+### 清理（2026-11-22 21:20，测试后）
+
+- 已删 `/etc/sysctl.d/99-vps-toolbox-bbr.conf`（此机器上永远应用不上、还会让 `sysctl --system` 报错）。
+- swap 已恢复原状：4G `/data/swapfile` 重新启用并加回 fstab；工具箱的 2G `/swapfile` 已停用并删除，fstab 里只剩原有的一行。现 `free -m` 显示 swap 4095M。
+- 留下的残留（无害）：`/etc/fail2ban/jail.d/` 下两个 local 配置（包已卸，无服务读它们）、`/etc/hosts.bak.20261122211644`、rsyslog（fail2ban 装的依赖，服务在跑）。
