@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.0.0
+# vps-toolbox.sh — VPS 工具箱（精简自研版）v1.0.1
 #
 # 来源：参考 kejilion/sh（Apache 2.0）的功能与实现，自行重写，只保留
 #       真正用得上的部分；与 vps-tune 是分工关系，不是重复：
@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -331,6 +331,18 @@ bbr_enable() {
     echo "当前拥塞算法：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
     echo "当前队列算法：$(sysctl -n net.core.default_qdisc 2>/dev/null)"
     echo
+    # 内核是否支持 BBR：先查可用算法列表，没有 bbr 就明说并跳过，
+    # 不要先写配置再报“应用参数失败”（微虚拟机等宿主机内核无 tcp_bbr 时会走到这里）。
+    # 读不到列表时（键不存在）不拦截，走老路、由后面的应用步骤兜底。
+    local avail
+    avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+    if [ -n "$avail" ] && ! printf '%s' "$avail" | grep -qw "bbr"; then
+        err "当前内核不支持 BBR。"
+        echo "可用拥塞算法：$avail"
+        echo "没有 bbr，通常是微虚拟机（宿主机内核无 tcp_bbr）或内核太旧。"
+        echo "如果刚装了 XanMod 内核，请重启后再试；微虚拟机装新内核也不生效，无法开启 BBR。"
+        pause; return 0
+    fi
     echo "本项只写两个基线参数到 $conf："
     echo "  net.core.default_qdisc=fq"
     echo "  net.ipv4.tcp_congestion_control=bbr"
