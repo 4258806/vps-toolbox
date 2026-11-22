@@ -155,3 +155,18 @@ sudo 免密；脚本用 `sudo bash /tmp/vps-toolbox.sh` 跑，菜单用管道输
 - 已删 `/etc/sysctl.d/99-vps-toolbox-bbr.conf`（此机器上永远应用不上、还会让 `sysctl --system` 报错）。
 - swap 已恢复原状：4G `/data/swapfile` 重新启用并加回 fstab；工具箱的 2G `/swapfile` 已停用并删除，fstab 里只剩原有的一行。现 `free -m` 显示 swap 4095M。
 - 留下的残留（无害）：`/etc/fail2ban/jail.d/` 下两个 local 配置（包已卸，无服务读它们）、`/etc/hosts.bak.20261122211644`、rsyslog（fail2ban 装的依赖，服务在跑）。
+
+## 一键安装验证（v1.0.2，2026-11-22 21:24–21:25）
+
+新增 `install.sh`：下载到临时文件、确认非空、`bash -n` 语法通过
+再安装到 `/usr/local/bin/vps-toolbox`（0755），建 `/usr/local/bin/tbox`
+快捷方式，装完跑 `tbox help` 验证。重新跑一遍就是更新。
+
+| 环境 | 方法 | 结果 |
+|---|---|---|
+| 沙箱（Ubuntu 24.04） | 本地 `bash install.sh` | 通过，装完 `tbox help` 正常，版本 v1.0.1（当时 main 上还是 v1.0.1） |
+| InstaBox（Debian 13） | scp 上传后 `sudo bash /tmp/install.sh` | 通过，同上，`/usr/local/bin/vps-toolbox` 与 `tbox` 软链都在 |
+
+说明：两次实测装的都是当时 main 分支上的 v1.0.1（v1.0.2 还没推），
+安装器逻辑不变，推完 v1.0.2 后同一条命令装到的就是 v1.0.2。
+InstaBox 上装完工具箱就留在机器里了（`tbox` 可用），未卸载。
