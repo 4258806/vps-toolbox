@@ -28,14 +28,27 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# 只支持 Debian / Ubuntu（与 vps-toolbox.sh 的 require_debian_ubuntu 一致）
+os_id=""
+if [ -r /etc/os-release ]; then
+    os_id="$(. /etc/os-release; printf '%s' "${ID:-}")"
+fi
+case "$os_id" in
+    debian|ubuntu) ;;
+    *)
+        err "错误：本工具箱只支持 Debian / Ubuntu，当前系统：${os_id:-未知}。"
+        exit 1
+        ;;
+esac
+
 # 下载到临时文件，确认非空、语法通过再安装，避免装个坏的
 tmp="$(mktemp /tmp/vps-toolbox-install.XXXXXX)" || { err "无法创建临时文件。"; exit 1; }
 trap 'rm -f -- "$tmp"' EXIT
 
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$SCRIPT_URL" -o "$tmp" || { err "下载失败，请检查网络后重试。"; exit 1; }
+    curl -fsSL --max-time 60 "$SCRIPT_URL" -o "$tmp" || { err "下载失败，请检查网络后重试。"; exit 1; }
 elif command -v wget >/dev/null 2>&1; then
-    wget -q "$SCRIPT_URL" -O "$tmp" || { err "下载失败，请检查网络后重试。"; exit 1; }
+    wget -q --timeout=60 "$SCRIPT_URL" -O "$tmp" || { err "下载失败，请检查网络后重试。"; exit 1; }
 else
     err "需要 curl 或 wget，请先安装其中一个。"
     exit 1
@@ -45,6 +58,11 @@ fi
 bash -n "$tmp" || { err "下载的脚本语法检查未通过，安装中止。"; exit 1; }
 
 install -m 0755 "$tmp" "$DEST"
+# tbox 已存在且不是指向上次安装的 vps-toolbox 时拒绝覆盖，避免遮蔽别的工具
+if [ -e "$LINK" ] && [ "$(readlink -f "$LINK" 2>/dev/null)" != "$DEST" ]; then
+    err "拒绝安装：$LINK 已存在且不是指向上次安装的 vps-toolbox（当前指向 $(readlink -f "$LINK" 2>/dev/null)），请先移走或改名再重装。"
+    exit 1
+fi
 ln -sf "$DEST" "$LINK"
 
 ok "vps-toolbox 已安装：$DEST"
