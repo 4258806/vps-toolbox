@@ -25,7 +25,7 @@
 #
 set -u
 
-VERSION="1.0.8"
+VERSION="1.0.9"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 
 # ── 颜色 ──────────────────────────────────────────────────────────
@@ -2344,17 +2344,18 @@ show_help() {
     echo "  tbox warp                   WARP 管理"
     echo "  tbox settings               系统工具子菜单"
     echo "  tbox help                   显示本帮助"
+    echo "  tbox version                显示版本号"
     echo
     echo "主菜单："
     echo "  1 系统信息查询  2 系统更新  3 系统清理"
     echo "  5 BBR 管理      7 WARP 管理  13 系统工具"
-    echo "  0 退出脚本"
+    echo "  102 卸载脚本    0 退出脚本"
     echo
     echo "系统工具子菜单（保留的编号）："
     echo "  1 快捷键  2 改密码  6 改 SSH 端口  7 DNS  8 重装系统"
     echo "  10 IPv4 优先  11 端口占用  12 swap  15 时区  16 BBRv3"
     echo "  18 主机名  19 换源  22 fail2ban  28 内核参数优化"
-    echo "  41 日志管理  42 环境变量  99 重启  101 帮助  102 卸载"
+    echo "  41 日志管理  42 环境变量  99 重启  101 帮助"
     echo
     echo "新机初始化建议顺序："
     echo "  7（DNS 国内）→ 10（IPv4 优先）→ 12（swap 2048M）"
@@ -2366,7 +2367,7 @@ show_help() {
     echo "------------------------"
 }
 
-# ── 13-102. 卸载脚本 ──────────────────────────────────────────────
+# ── 102. 卸载脚本（主菜单） ──────────────────────────────────────────────
 settings_uninstall() {
     box_title "卸载 vps-toolbox"
     echo "将删除：crontab 里 vps-toolbox 相关的行、/usr/local/bin 下"
@@ -2427,7 +2428,6 @@ settings_menu() {
             "  ${C_CYAN}22.${C_RESET}  SSH 防御程序 fail2ban"
             "  ${C_CYAN}41.${C_RESET}  系统日志管理工具"
             "  ${C_CYAN}99.${C_RESET}  重启服务器"
-            "  ${C_CYAN}102.${C_RESET} 卸载脚本"
         )
         lw=$(( $(max_width "${left[@]}") + 2 ))
         lines=(
@@ -2442,7 +2442,6 @@ settings_menu() {
             "$(pad_to "${left[6]}" "$lw")${C_CYAN}28.${C_RESET}  内核参数优化（基线预设）"
             "$(pad_to "${left[7]}" "$lw")${C_CYAN}42.${C_RESET}  系统变量管理工具"
             "$(pad_to "${left[8]}" "$lw")${C_CYAN}101.${C_RESET} 命令高级用法"
-            "${left[9]}"
             "---"
             "  ${C_CYAN}0.${C_RESET}   返回主菜单"
         )
@@ -2468,7 +2467,6 @@ settings_menu() {
             42) settings_env ;;
             99) settings_reboot ;;
             101) show_help; pause ;;
-            102) settings_uninstall ;;
             0|"") return 0 ;;
             *) echo "无效的选择。"; pause ;;
         esac
@@ -2491,6 +2489,7 @@ main_menu() {
             "  ${C_CYAN}5.${C_RESET}   BBR 管理"
             "  ${C_CYAN}7.${C_RESET}   WARP 管理"
             "  ${C_CYAN}13.${C_RESET}  系统工具"
+            "  ${C_CYAN}102.${C_RESET} 卸载脚本"
             "---"
             "  ${C_CYAN}0.${C_RESET}   退出脚本"
         )
@@ -2504,6 +2503,7 @@ main_menu() {
             5) bbr_enable ;;
             7) warp_manage ;;
             13) settings_menu ;;
+            102) settings_uninstall ;;
             0|"") echo "再见。"; exit 0 ;;
             *) echo "无效的选择。"; pause ;;
         esac
